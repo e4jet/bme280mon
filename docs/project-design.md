@@ -96,7 +96,11 @@ own sentinel errors.
 - **sensor** — `Reader` interface: `Read(ctx context.Context) (Reading, error)`
   where `Reading{ Temperature, Humidity, Pressure float64; Time time.Time }`.
   Real implementation opens the I2C bus at `0x76` via periph.io; a fake
-  implementation drives tests without hardware. Sentinel: `ErrRead`.
+  implementation drives tests without hardware. Sentinel: `ErrRead`. periph's
+  `Sense` is not interruptible, so `Read` runs it in a goroutine and honors
+  `ctx` (a per-read timeout is applied by the poll loop); on timeout/cancel the
+  blocked read is abandoned and its result discarded, so a wedged I2C bus can
+  neither stall the poll loop nor block graceful shutdown.
 - **detector** — pure state machine, no network/clock/ctx. Given `(state, reading)`
   returns `(newState, event)`. See below.
 - **alert** — `Notifier` interface:
@@ -136,10 +140,19 @@ rising, falling, and flapping-near-threshold cases.
 - Server URL and topic come from config so a self-hosted ntfy can be swapped in later.
 - Temperature is **recorded only** — it never triggers alerts (per requirements).
 - Transport uses **TLS** (default `https://ntfy.sh`); the HTTP client sets an
-  **explicit timeout**. On a public ntfy server the topic name is effectively an
-  unguessable access token, so it is **treated as a secret**: never logged, and
-  redacted in any error/diagnostic output (guidelines: "MUST NOT log secrets").
-  Send failures wrap `ErrSend` with `%w` and are logged + counted, not fatal.
+  **explicit timeout**. Plaintext `http` is rejected at config validation for
+  any non-loopback host, since the topic travels in the URL path and must not
+  cross the network in cleartext. On a public ntfy server the topic name is
+  effectively an unguessable access token, so it is **treated as a secret**:
+  never logged, and redacted in any error/diagnostic output (guidelines: "MUST
+  NOT log secrets"). The topic is also validated as URL-path-safe at startup.
+- **Delivery reliability.** Notifications are handed to an asynchronous
+  **dispatcher** goroutine so the poll loop never blocks on a slow/unreachable
+  ntfy. A failed send wraps `ErrSend`, is logged + counted
+  (`bme280_notify_errors_total`), and is **retried with exponential backoff and
+  jitter**. Only the most recent notification matters: if a new state change
+  produces a notification while an earlier one is still being retried, the
+  pending retry is **dropped in favor of the newer message** (latest wins).
 
 ### Metrics
 
@@ -170,6 +183,10 @@ Ready for VictoriaMetrics to scrape.
   counter) and runs in a single goroutine, so that state needs no locking.
 - The **metrics HTTP server** runs in its own goroutine; Prometheus gauges are
   internally goroutine-safe.
+- The **notification dispatcher** runs in its own goroutine (tied to the root
+  context), owning its retry/backoff state; the poll loop communicates with it
+  by enqueuing notifications over a channel, so neither goroutine shares mutable
+  state with the other.
 - A **root `context.Context`** (cancelled on `SIGINT`/`SIGTERM`) ties both
   goroutines' lifetimes together and is passed first into `sensor.Read` and
   `alert.Send`. On shutdown the ticker stops and the metrics server is
