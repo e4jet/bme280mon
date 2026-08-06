@@ -1,0 +1,22 @@
+[Unit]
+Description=BME280 humidity monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bme280mon
+Group=i2c
+ExecStart=/usr/local/bin/bme280mon -config /etc/bme280mon/config.yaml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/etc/bme280mon
+DeviceAllow=/dev/i2c-1 rw
+
+[Install]
+WantedBy=multi-user.target
