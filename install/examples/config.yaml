@@ -1,0 +1,10 @@
+# bme280mon configuration
+poll_interval: 30s          # time between sensor reads
+humidity_threshold: 60.0    # percent RH that counts as "high"
+humidity_buffer: 3.0        # hysteresis gap; recovers below (threshold - buffer)
+i2c_address: 0x76           # BME280 I2C address (0x76 or 0x77)
+ntfy_server: https://ntfy.sh
+ntfy_topic: ""              # REQUIRED: set to a unique, hard-to-guess topic name
+metrics_addr: ":9101"       # Prometheus /metrics listen address
+sensor_fail_limit: 5        # consecutive read failures before alerting
+http_timeout: 10s           # ntfy request timeout

@@ -1,0 +1,33 @@
+version: "2"
+linters:
+  default: all
+  disable:
+    - wsl
+    - wsl_v5
+    - gomodguard
+    - testpackage
+    - perfsprint
+    - nonamedreturns
+    - noinlineerr
+    - godoclint
+    - dupl
+    - exhaustruct
+    - tagliatelle
+    - gochecknoglobals
+    - depguard
+    - forbidigo
+    - wrapcheck
+    - varnamelen
+    - nlreturn
+    - gosec
+    - lll
+  settings:
+    revive:
+      rules:
+        - name: package-comments
+          disabled: true
+  exclusions:
+    paths:
+      - "vendor/.*"
+run:
+  modules-download-mode: readonly
