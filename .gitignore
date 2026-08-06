@@ -26,6 +26,12 @@ go.work.sum
 
 # env file
 .env
+.DS_Store
+*/.DS_Store
+
+# Build artifacts
+/bme280mon
+bme280mon-*.install
 
 # Editor/IDE
 # .idea/
