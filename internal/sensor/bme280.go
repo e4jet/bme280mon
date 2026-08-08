@@ -20,6 +20,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"time"
 
 	"periph.io/x/conn/v3/i2c"
@@ -38,7 +40,7 @@ type BME280 struct {
 // Open initializes the periph host, opens the default I2C bus, and configures
 // the BME280 at addr (0x76 or 0x77).
 func Open(addr uint16) (*BME280, error) {
-	if _, err := host.Init(); err != nil {
+	if err := hostInit(); err != nil {
 		return nil, fmt.Errorf("periph host init: %w", err)
 	}
 	bus, err := i2creg.Open("")
@@ -51,6 +53,20 @@ func Open(addr uint16) (*BME280, error) {
 		return nil, fmt.Errorf("init bme280 at %#x: %w", addr, err)
 	}
 	return &BME280{dev: dev, bus: bus}, nil
+}
+
+// hostInit runs periph's host.Init while suppressing its standard-logger
+// output. host.Init eagerly initializes every registered driver and logs a
+// failure line for each device it cannot open — including the GPIO chips this
+// daemon neither uses nor is granted under its least-privilege sandbox. Real
+// I2C failures still surface through the errors returned by i2creg.Open and
+// bmxx80.NewI2C below, which run with logging restored.
+func hostInit() error {
+	prev := log.Writer()
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(prev)
+	_, err := host.Init()
+	return err
 }
 
 // Read takes one sample, honoring ctx for cancellation and deadlines. periph's

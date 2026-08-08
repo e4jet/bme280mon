@@ -112,7 +112,7 @@ func (m *Monitor) step(ctx context.Context) {
 	}
 	m.fails = 0
 	m.d.Metrics.Update(r.Temperature, r.Humidity, r.Pressure)
-	m.d.Logger.Debug("reading", "humidity", r.Humidity, "temperature", r.Temperature, "pressure", r.Pressure)
+	m.d.Logger.Info("reading", "humidity", r.Humidity, "temperature", r.Temperature, "pressure", r.Pressure)
 
 	if n, ok := humidityNotification(m.d.Detector.Update(r.Humidity), r); ok {
 		m.notify(n)
