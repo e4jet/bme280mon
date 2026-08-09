@@ -20,6 +20,8 @@ package metrics
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -45,15 +47,22 @@ type Metrics struct {
 	notifyErrors prometheus.Counter
 }
 
-// New builds a Metrics with its own registry (so tests are isolated).
-func New() *Metrics {
+// New builds a Metrics with its own registry (so tests are isolated). A
+// non-empty location is attached to every series as a constant `location`
+// label, which is how two instances on one host stay apart in Prometheus;
+// an empty location emits the same unlabelled series as a single-sensor host.
+func New(location string) *Metrics {
+	labels := prometheus.Labels{}
+	if location != "" {
+		labels["location"] = location
+	}
 	m := &Metrics{
 		reg:          prometheus.NewRegistry(),
-		humidity:     prometheus.NewGauge(prometheus.GaugeOpts{Name: "bme280_humidity_percent", Help: "Relative humidity in percent."}),
-		temperature:  prometheus.NewGauge(prometheus.GaugeOpts{Name: "bme280_temperature_celsius", Help: "Temperature in degrees Celsius."}),
-		pressure:     prometheus.NewGauge(prometheus.GaugeOpts{Name: "bme280_pressure_hpa", Help: "Atmospheric pressure in hectopascals."}),
-		readErrors:   prometheus.NewCounter(prometheus.CounterOpts{Name: "bme280_read_errors_total", Help: "Total sensor read failures."}),
-		notifyErrors: prometheus.NewCounter(prometheus.CounterOpts{Name: "bme280_notify_errors_total", Help: "Total notification send failures."}),
+		humidity:     prometheus.NewGauge(prometheus.GaugeOpts{Name: "bme280_humidity_percent", Help: "Relative humidity in percent.", ConstLabels: labels}),
+		temperature:  prometheus.NewGauge(prometheus.GaugeOpts{Name: "bme280_temperature_celsius", Help: "Temperature in degrees Celsius.", ConstLabels: labels}),
+		pressure:     prometheus.NewGauge(prometheus.GaugeOpts{Name: "bme280_pressure_hpa", Help: "Atmospheric pressure in hectopascals.", ConstLabels: labels}),
+		readErrors:   prometheus.NewCounter(prometheus.CounterOpts{Name: "bme280_read_errors_total", Help: "Total sensor read failures.", ConstLabels: labels}),
+		notifyErrors: prometheus.NewCounter(prometheus.CounterOpts{Name: "bme280_notify_errors_total", Help: "Total notification send failures.", ConstLabels: labels}),
 	}
 	m.reg.MustRegister(m.humidity, m.temperature, m.pressure, m.readErrors, m.notifyErrors)
 	return m
@@ -77,11 +86,24 @@ func (m *Metrics) Handler() http.Handler {
 	return promhttp.HandlerFor(m.reg, promhttp.HandlerOpts{})
 }
 
-// Serve runs the metrics HTTP server on addr with explicit timeouts until ctx
-// is cancelled, then gracefully drains it. Its lifetime is tied to ctx.
-func (m *Metrics) Serve(ctx context.Context, addr string) error {
+// Listen binds addr. It is separate from Serve so that a caller running Serve
+// on its own goroutine can still fail fast on a bind error: with two instances
+// on one host, a duplicated metrics_addr is the likeliest misconfiguration, and
+// it must not degrade into a silently metric-less daemon.
+func (m *Metrics) Listen(ctx context.Context, addr string) (net.Listener, error) {
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("listen on %s: %w", addr, err)
+	}
+	return ln, nil
+}
+
+// Serve runs the metrics HTTP server on ln with explicit timeouts until ctx is
+// cancelled, then gracefully drains it. Its lifetime is tied to ctx, and it
+// takes ownership of ln.
+func (m *Metrics) Serve(ctx context.Context, ln net.Listener) error {
 	srv := &http.Server{
-		Addr:         addr,
 		Handler:      m.Handler(),
 		ReadTimeout:  readTimeout,
 		WriteTimeout: writeTimeout,
@@ -89,7 +111,7 @@ func (m *Metrics) Serve(ctx context.Context, addr string) error {
 	}
 	errCh := make(chan error, 1)
 	go func() {
-		err := srv.ListenAndServe()
+		err := srv.Serve(ln)
 		if errors.Is(err, http.ErrServerClosed) {
 			err = nil
 		}

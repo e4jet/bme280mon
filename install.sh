@@ -15,7 +15,9 @@ set -euo pipefail
 
 INSTALL_BIN=/usr/local/bin
 CONFIG_DIR=/etc/bme280mon
+EXAMPLE_DIR=/etc/bme280mon/examples
 SERVICE=/etc/systemd/system/bme280mon.service
+TEMPLATE_SERVICE='/etc/systemd/system/bme280mon@.service'
 RUN_USER=bme280mon
 
 echo "bme280mon installer"
@@ -56,14 +58,27 @@ else
     echo "  keeping existing ${CONFIG_DIR}/config.yaml"
 fi
 
+# Examples are refreshed on every install; they are templates to copy from, not
+# live configuration, so overwriting them cannot disturb a running instance.
+echo "Installing examples -> ${EXAMPLE_DIR}"
+install -d -m 750 -o "${RUN_USER}" -g "${RUN_USER}" "${EXAMPLE_DIR}"
+install -m 640 -o "${RUN_USER}" -g "${RUN_USER}" "${TMPDIR}/examples/second-sensor.yaml" "${EXAMPLE_DIR}/second-sensor.yaml"
+
 echo "Installing service -> ${SERVICE}"
 install -m 644 "${TMPDIR}/bme280mon.service" "${SERVICE}"
+
+# The template unit is for running a second sensor on this Pi. It is inert until
+# someone enables an instance of it, so a single-sensor host can ignore it.
+echo "Installing template service -> ${TEMPLATE_SERVICE} (second sensor; not enabled)"
+install -m 644 "${TMPDIR}/bme280mon@.service" "${TEMPLATE_SERVICE}"
 
 systemctl daemon-reload
 systemctl enable bme280mon.service
 echo ""
 echo "Installation complete."
 echo "Edit ${CONFIG_DIR}/config.yaml (set ntfy_topic), then: sudo systemctl start bme280mon"
+echo ""
+echo "Running a second sensor on this Pi? See ${EXAMPLE_DIR}/second-sensor.yaml"
 
 exit 0
 #__PAYLOAD__

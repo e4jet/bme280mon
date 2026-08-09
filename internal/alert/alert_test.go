@@ -95,3 +95,24 @@ func TestSendBuildRequestErrorRedactsTopic(t *testing.T) {
 	err := n.Send(context.Background(), Notification{Title: "t", Body: "b", Priority: Default})
 	assertRedactedSendErr(t, err)
 }
+
+func TestLabel(t *testing.T) {
+	t.Parallel()
+	const title = "⚠️ Humidity high: 63%"
+	tests := []struct {
+		name     string
+		location string
+		want     string
+	}{
+		{name: "empty location is unchanged", location: "", want: title},
+		{name: "location leads the title", location: "attic", want: "attic: " + title},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := Label(tt.location, title); got != tt.want {
+				t.Errorf("Label(%q, %q) = %q, want %q", tt.location, title, got, tt.want)
+			}
+		})
+	}
+}

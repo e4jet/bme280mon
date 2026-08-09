@@ -72,7 +72,7 @@ func run(cfgPath string, logger *slog.Logger) error {
 	defer stop()
 
 	notifier := alert.New(alert.Options{Server: cfg.NtfyServer, Topic: cfg.NtfyTopic, Timeout: cfg.HTTPTimeout})
-	notifyLifecycle(ctx, notifier, logger, startedNotification())
+	notifyLifecycle(ctx, notifier, logger, startedNotification(cfg.Location))
 
 	err = serve(ctx, cfg, notifier, logger)
 
@@ -81,7 +81,7 @@ func run(cfgPath string, logger *slog.Logger) error {
 	// unreachable ntfy server cannot hold the process past TimeoutStopSec.
 	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.HTTPTimeout)
 	defer cancel()
-	notifyLifecycle(shutdownCtx, notifier, logger, stoppedNotification(err))
+	notifyLifecycle(shutdownCtx, notifier, logger, stoppedNotification(cfg.Location, err))
 	return err
 }
 
@@ -98,9 +98,16 @@ func serve(ctx context.Context, cfg config.Config, notifier alert.Notifier, logg
 		}
 	}()
 
-	m := metrics.New()
+	m := metrics.New(cfg.Location)
+	// Bind before serving so a port already taken by another instance is a
+	// startup failure (announced over ntfy) rather than a daemon that runs on
+	// happily with no metrics endpoint.
+	ln, err := m.Listen(ctx, cfg.MetricsAddr)
+	if err != nil {
+		return fmt.Errorf("metrics listen: %w", err)
+	}
 	srvErr := make(chan error, 1)
-	go func() { srvErr <- m.Serve(ctx, cfg.MetricsAddr) }()
+	go func() { srvErr <- m.Serve(ctx, ln) }()
 
 	disp := dispatch.New(dispatch.Deps{
 		Notifier: notifier,
@@ -115,6 +122,7 @@ func serve(ctx context.Context, cfg config.Config, notifier alert.Notifier, logg
 		Metrics:    m,
 		Interval:   cfg.PollInterval,
 		FailLimit:  cfg.SensorFailLimit,
+		Location:   cfg.Location,
 		Logger:     logger,
 	})
 
@@ -147,11 +155,12 @@ func hostname() string {
 	return h
 }
 
-// startedNotification announces that this instance is up. The host is included
-// so several sensors sharing one topic stay distinguishable.
-func startedNotification() alert.Notification {
+// startedNotification announces that this instance is up. The host identifies
+// the Pi and location identifies the sensor on it, so neither several Pis on
+// one topic nor several instances on one Pi are ambiguous.
+func startedNotification(location string) alert.Notification {
 	return alert.Notification{
-		Title:    "▶️ bme280mon started",
+		Title:    alert.Label(location, "▶️ bme280mon started"),
 		Body:     fmt.Sprintf("version %s on %s", version, hostname()),
 		Priority: alert.Low,
 	}
@@ -161,13 +170,13 @@ func startedNotification() alert.Notification {
 // is reported in the body so a restart loop is visible without reading the
 // journal; config-load failures happen before ntfy is configured and so cannot
 // be reported this way.
-func stoppedNotification(err error) alert.Notification {
+func stoppedNotification(location string, err error) alert.Notification {
 	body := fmt.Sprintf("clean shutdown on %s", hostname())
 	if err != nil {
 		body = fmt.Sprintf("exited on %s with error: %v", hostname(), err)
 	}
 	return alert.Notification{
-		Title:    "⏹️ bme280mon stopped",
+		Title:    alert.Label(location, "⏹️ bme280mon stopped"),
 		Body:     body,
 		Priority: alert.Low,
 	}

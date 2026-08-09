@@ -52,7 +52,7 @@ func discardLogger() *slog.Logger {
 func TestStartedNotification(t *testing.T) {
 	t.Parallel()
 
-	n := startedNotification()
+	n := startedNotification("")
 	if !strings.Contains(n.Body, version) {
 		t.Errorf("body %q does not report version %q", n.Body, version)
 	}
@@ -82,7 +82,7 @@ func TestStoppedNotification(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			n := stoppedNotification(tt.err)
+			n := stoppedNotification("", tt.err)
 			if !strings.Contains(n.Body, tt.want) {
 				t.Errorf("body = %q, want it to contain %q", n.Body, tt.want)
 			}
@@ -96,11 +96,34 @@ func TestStoppedNotification(t *testing.T) {
 	}
 }
 
+// With two instances on one Pi the hostname is identical, so the location is
+// the only thing separating their lifecycle notices.
+func TestLifecycleNotificationsCarryLocation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		got  alert.Notification
+	}{
+		{name: "started", got: startedNotification("attic")},
+		{name: "stopped", got: stoppedNotification("attic", nil)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if !strings.HasPrefix(tt.got.Title, "attic: ") {
+				t.Errorf("title = %q, want it to lead with the location", tt.got.Title)
+			}
+		})
+	}
+}
+
 func TestNotifyLifecycleSends(t *testing.T) {
 	t.Parallel()
 
 	stub := &stubNotifier{}
-	want := startedNotification()
+	want := startedNotification("")
 	notifyLifecycle(t.Context(), stub, discardLogger(), want)
 
 	if len(stub.sent) != 1 {
@@ -120,7 +143,7 @@ func TestNotifyLifecycleLogsFailure(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	stub := &stubNotifier{err: alert.ErrSend}
 
-	notifyLifecycle(t.Context(), stub, logger, stoppedNotification(nil))
+	notifyLifecycle(t.Context(), stub, logger, stoppedNotification("", nil))
 
 	if !strings.Contains(buf.String(), "lifecycle notification failed") {
 		t.Errorf("log = %q, want it to report the failure", buf.String())
@@ -149,7 +172,7 @@ func TestShutdownNoticeSurvivesCancelledRunContext(t *testing.T) {
 	runCtx, cancel := context.WithCancel(t.Context())
 	cancel() // the signal has arrived; the run context is gone
 
-	want := stoppedNotification(nil)
+	want := stoppedNotification("", nil)
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.WithoutCancel(runCtx), 5*time.Second)
 	t.Cleanup(cancelShutdown)
 	notifyLifecycle(shutdownCtx, notifier, discardLogger(), want)

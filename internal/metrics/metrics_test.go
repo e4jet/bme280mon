@@ -21,7 +21,6 @@ package metrics
 import (
 	"context"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,7 +32,7 @@ import (
 
 func TestUpdateSetsGauges(t *testing.T) {
 	t.Parallel()
-	m := New()
+	m := New("")
 	m.Update(21.5, 63.2, 1013.25)
 	if got := testutil.ToFloat64(m.humidity); got != 63.2 {
 		t.Errorf("humidity = %v, want 63.2", got)
@@ -56,7 +55,7 @@ func TestUpdateSetsGauges(t *testing.T) {
 
 func TestHandlerExposesMetricNames(t *testing.T) {
 	t.Parallel()
-	m := New()
+	m := New("")
 	m.Update(20, 50, 1000)
 	rec := httptest.NewRecorder()
 	m.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/metrics", nil))
@@ -68,31 +67,69 @@ func TestHandlerExposesMetricNames(t *testing.T) {
 	}
 }
 
-func TestServeReturnsListenError(t *testing.T) {
+func TestLocationLabel(t *testing.T) {
 	t.Parallel()
-	// A port out of range makes ListenAndServe fail immediately, so Serve
-	// returns the error instead of blocking on ctx.
-	if err := New().Serve(context.Background(), "127.0.0.1:99999"); err == nil {
-		t.Fatal("Serve returned nil, want a listen error")
+
+	labelled := New("attic")
+	labelled.Update(20, 50, 1000)
+	rec := httptest.NewRecorder()
+	labelled.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+	if !strings.Contains(rec.Body.String(), `bme280_humidity_percent{location="attic"}`) {
+		t.Errorf("labelled output missing location label:\n%s", rec.Body.String())
+	}
+
+	// An unset location must leave the single-sensor series exactly as it was,
+	// so existing dashboards and alert rules keep matching.
+	plain := New("")
+	plain.Update(20, 50, 1000)
+	rec = httptest.NewRecorder()
+	plain.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+	if !strings.Contains(rec.Body.String(), "bme280_humidity_percent 50") {
+		t.Errorf("unlabelled output should have no label set:\n%s", rec.Body.String())
+	}
+}
+
+func TestListenReturnsBindError(t *testing.T) {
+	t.Parallel()
+	// A port out of range fails to bind, so Listen reports it to the caller
+	// before any serving goroutine is started.
+	if _, err := New("").Listen(t.Context(), "127.0.0.1:99999"); err == nil {
+		t.Fatal("Listen returned nil, want a bind error")
+	}
+}
+
+// Two instances on one host must not both claim the same metrics_addr: the
+// second has to fail at bind time rather than run on without an endpoint.
+func TestListenRejectsAddressAlreadyInUse(t *testing.T) {
+	t.Parallel()
+
+	first, err := New("basement").Listen(t.Context(), "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("first Listen: %v", err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+
+	if _, err := New("attic").Listen(t.Context(), first.Addr().String()); err == nil {
+		t.Error("second Listen on the same address succeeded, want a bind error")
 	}
 }
 
 func TestServeShutsDownOnContextCancel(t *testing.T) {
 	t.Parallel()
-	// Grab a free port, then hand its address to Serve.
-	var lc net.ListenConfig
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+
+	m := New("")
+	m.Update(20, 50, 1000)
+	// Listen picks a free port and holds it, so there is no window in which
+	// another test could claim the address between bind and serve.
+	ln, err := m.Listen(t.Context(), "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	addr := ln.Addr().String()
-	_ = ln.Close()
 
-	m := New()
-	m.Update(20, 50, 1000)
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
-	go func() { errCh <- m.Serve(ctx, addr) }()
+	go func() { errCh <- m.Serve(ctx, ln) }()
 
 	// Poll until the endpoint is serving.
 	var body string

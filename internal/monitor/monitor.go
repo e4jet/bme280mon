@@ -50,6 +50,7 @@ type Deps struct {
 	Metrics    *metrics.Metrics
 	Interval   time.Duration
 	FailLimit  int
+	Location   string
 	Logger     *slog.Logger
 }
 
@@ -95,7 +96,7 @@ func (m *Monitor) step(ctx context.Context) {
 		if m.fails >= m.d.FailLimit && !m.sensorDown {
 			m.sensorDown = true
 			m.notify(alert.Notification{
-				Title:    "BME280 sensor unavailable",
+				Title:    alert.Label(m.d.Location, "BME280 sensor unavailable"),
 				Body:     fmt.Sprintf("no successful reading after %d attempts", m.fails),
 				Priority: alert.High,
 			})
@@ -105,7 +106,7 @@ func (m *Monitor) step(ctx context.Context) {
 	if m.sensorDown {
 		m.sensorDown = false
 		m.notify(alert.Notification{
-			Title:    "BME280 sensor recovered",
+			Title:    alert.Label(m.d.Location, "BME280 sensor recovered"),
 			Body:     "sensor reads have resumed",
 			Priority: alert.Low,
 		})
@@ -114,25 +115,25 @@ func (m *Monitor) step(ctx context.Context) {
 	m.d.Metrics.Update(r.Temperature, r.Humidity, r.Pressure)
 	m.d.Logger.Info("reading", "humidity", r.Humidity, "temperature", r.Temperature, "pressure", r.Pressure)
 
-	if n, ok := humidityNotification(m.d.Detector.Update(r.Humidity), r); ok {
+	if n, ok := humidityNotification(m.d.Location, m.d.Detector.Update(r.Humidity), r); ok {
 		m.notify(n)
 	}
 }
 
 // humidityNotification maps a detector transition to the notification to send.
 // The second return is false when the event needs no notification.
-func humidityNotification(event detector.Event, r sensor.Reading) (alert.Notification, bool) {
+func humidityNotification(location string, event detector.Event, r sensor.Reading) (alert.Notification, bool) {
 	body := fmt.Sprintf("Humidity %.1f%%, temperature %.1f°C", r.Humidity, r.Temperature)
 	switch event {
 	case detector.HighAlert:
 		return alert.Notification{
-			Title:    fmt.Sprintf("⚠️ Humidity high: %.0f%%", r.Humidity),
+			Title:    alert.Label(location, fmt.Sprintf("⚠️ Humidity high: %.0f%%", r.Humidity)),
 			Body:     body,
 			Priority: alert.High,
 		}, true
 	case detector.Recovered:
 		return alert.Notification{
-			Title:    fmt.Sprintf("✅ Humidity back to normal: %.0f%%", r.Humidity),
+			Title:    alert.Label(location, fmt.Sprintf("✅ Humidity back to normal: %.0f%%", r.Humidity)),
 			Body:     body,
 			Priority: alert.Low,
 		}, true

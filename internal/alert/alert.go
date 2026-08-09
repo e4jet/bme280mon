@@ -72,6 +72,17 @@ type Notification struct {
 	Priority Priority
 }
 
+// Label prefixes a notification title with location, so several sensors sharing
+// a host or an ntfy topic stay distinguishable on a phone's lock screen. An
+// empty location returns title unchanged, keeping single-sensor deployments
+// byte-identical to an unlabelled one.
+func Label(location, title string) string {
+	if location == "" {
+		return title
+	}
+	return location + ": " + title
+}
+
 // Notifier delivers notifications.
 type Notifier interface {
 	Send(ctx context.Context, n Notification) error

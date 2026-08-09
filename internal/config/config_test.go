@@ -22,6 +22,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -56,6 +57,27 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadLocation(t *testing.T) {
+	t.Parallel()
+
+	c, err := Load(writeTemp(t, "ntfy_topic: t\nlocation: attic\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Location != "attic" {
+		t.Errorf("Location = %q, want %q", c.Location, "attic")
+	}
+
+	// Omitting it is the single-sensor case and must stay valid.
+	d, err := Load(writeTemp(t, "ntfy_topic: t\n"))
+	if err != nil {
+		t.Fatalf("Load without location: %v", err)
+	}
+	if d.Location != "" {
+		t.Errorf("Location = %q, want empty by default", d.Location)
+	}
+}
+
 func TestLoadAllowsLoopbackHTTP(t *testing.T) {
 	t.Parallel()
 	// Plaintext http is acceptable to a loopback host (topic never leaves the box).
@@ -67,19 +89,40 @@ func TestLoadAllowsLoopbackHTTP(t *testing.T) {
 func TestLoadRejectsInvalid(t *testing.T) {
 	t.Parallel()
 	tests := map[string]string{
-		"missing topic":       "humidity_threshold: 60\n",
-		"buffer >= threshold": "ntfy_topic: t\nhumidity_threshold: 5\nhumidity_buffer: 5\n",
-		"threshold over 100":  "ntfy_topic: t\nhumidity_threshold: 150\n",
-		"bad address":         "ntfy_topic: t\ni2c_address: 0x10\n",
-		"bad duration":        "ntfy_topic: t\npoll_interval: fortnight\n",
-		"plaintext http":      "ntfy_topic: t\nntfy_server: http://ntfy.example.com\n",
-		"unsafe topic":        "ntfy_topic: has/slash\n",
+		"missing topic":         "humidity_threshold: 60\n",
+		"buffer >= threshold":   "ntfy_topic: t\nhumidity_threshold: 5\nhumidity_buffer: 5\n",
+		"threshold over 100":    "ntfy_topic: t\nhumidity_threshold: 150\n",
+		"bad address":           "ntfy_topic: t\ni2c_address: 0x10\n",
+		"bad duration":          "ntfy_topic: t\npoll_interval: fortnight\n",
+		"plaintext http":        "ntfy_topic: t\nntfy_server: http://ntfy.example.com\n",
+		"unsafe topic":          "ntfy_topic: has/slash\n",
+		"bare metrics port":     "ntfy_topic: t\nmetrics_addr: \"9101\"\n",
+		"location with newline": "ntfy_topic: t\nlocation: \"attic\\nX-Injected: 1\"\n",
+		"location too long":     "ntfy_topic: t\nlocation: " + strings.Repeat("x", 65) + "\n",
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			if _, err := Load(writeTemp(t, body)); !errors.Is(err, ErrInvalidConfig) {
 				t.Fatalf("Load(%q) error = %v, want ErrInvalidConfig", name, err)
+			}
+		})
+	}
+}
+
+func TestLoadAcceptsMetricsAddrForms(t *testing.T) {
+	t.Parallel()
+	// The stack binds the sensor endpoint to loopback; the compiled default
+	// stays ":9101". Both must survive validation.
+	tests := map[string]string{
+		"loopback host and port": "ntfy_topic: t\nmetrics_addr: \"127.0.0.1:9101\"\n",
+		"port only":              "ntfy_topic: t\nmetrics_addr: \":9101\"\n",
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := Load(writeTemp(t, body)); err != nil {
+				t.Fatalf("Load(%q) error = %v, want nil", name, err)
 			}
 		})
 	}
