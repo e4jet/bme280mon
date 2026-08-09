@@ -65,9 +65,29 @@ func run(cfgPath string, logger *slog.Logger) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	// NotifyContext is the signal trap: SIGINT/SIGTERM cancels ctx, which unwinds
+	// serve and hands control back here while the process is still alive to
+	// announce its own shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	notifier := alert.New(alert.Options{Server: cfg.NtfyServer, Topic: cfg.NtfyTopic, Timeout: cfg.HTTPTimeout})
+	notifyLifecycle(ctx, notifier, logger, startedNotification())
+
+	err = serve(ctx, cfg, notifier, logger)
+
+	// ctx is already cancelled by the signal that ended serve, so the shutdown
+	// notice needs a context detached from it, bounded by the same timeout so an
+	// unreachable ntfy server cannot hold the process past TimeoutStopSec.
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.HTTPTimeout)
+	defer cancel()
+	notifyLifecycle(shutdownCtx, notifier, logger, stoppedNotification(err))
+	return err
+}
+
+// serve opens the sensor and runs the poll loop and metrics server until ctx is
+// cancelled.
+func serve(ctx context.Context, cfg config.Config, notifier alert.Notifier, logger *slog.Logger) error {
 	reader, err := sensor.Open(cfg.I2CAddress)
 	if err != nil {
 		return fmt.Errorf("open sensor: %w", err)
@@ -83,7 +103,7 @@ func run(cfgPath string, logger *slog.Logger) error {
 	go func() { srvErr <- m.Serve(ctx, cfg.MetricsAddr) }()
 
 	disp := dispatch.New(dispatch.Deps{
-		Notifier: alert.New(alert.Options{Server: cfg.NtfyServer, Topic: cfg.NtfyTopic, Timeout: cfg.HTTPTimeout}),
+		Notifier: notifier,
 		Metrics:  m,
 		Logger:   logger,
 	})
@@ -105,4 +125,50 @@ func run(cfgPath string, logger *slog.Logger) error {
 		logger.Error("metrics server", "error", err)
 	}
 	return runErr
+}
+
+// notifyLifecycle delivers a startup or shutdown notice synchronously. The
+// dispatcher's retrying delivery is tied to the run context, which is already
+// cancelled by the time we are shutting down, so these notices get one bounded
+// attempt each; a failure is logged and never blocks starting or stopping.
+func notifyLifecycle(ctx context.Context, notifier alert.Notifier, logger *slog.Logger, n alert.Notification) {
+	if err := notifier.Send(ctx, n); err != nil {
+		logger.Error("lifecycle notification failed", "title", n.Title, "error", err)
+	}
+}
+
+// hostname reports the host for lifecycle notices, falling back to a
+// placeholder rather than losing the notification.
+func hostname() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return "unknown-host"
+	}
+	return h
+}
+
+// startedNotification announces that this instance is up. The host is included
+// so several sensors sharing one topic stay distinguishable.
+func startedNotification() alert.Notification {
+	return alert.Notification{
+		Title:    "▶️ bme280mon started",
+		Body:     fmt.Sprintf("version %s on %s", version, hostname()),
+		Priority: alert.Low,
+	}
+}
+
+// stoppedNotification announces that this instance is going away. A non-nil err
+// is reported in the body so a restart loop is visible without reading the
+// journal; config-load failures happen before ntfy is configured and so cannot
+// be reported this way.
+func stoppedNotification(err error) alert.Notification {
+	body := fmt.Sprintf("clean shutdown on %s", hostname())
+	if err != nil {
+		body = fmt.Sprintf("exited on %s with error: %v", hostname(), err)
+	}
+	return alert.Notification{
+		Title:    "⏹️ bme280mon stopped",
+		Body:     body,
+		Priority: alert.Low,
+	}
 }

@@ -76,6 +76,15 @@ Build and package are possible on a development machine (macOS or Linux) and can
 3. In the app, subscribe to the same topic name you put in the config.
 4. When humidity crosses the threshold you'll get a push notification (e.g.  "Humidity high: 63%"), and a follow-up low-priority notification once it recovers back below the threshold minus the hysteresis buffer. Sensor failures are reported the same way if reads fail repeatedly.
 
+`bme280mon` also announces its own lifecycle:
+
+| Notification              | Priority | When                                                                                                   |
+|---------------------------|----------|--------------------------------------------------------------------------------------------------------|
+| `▶️ bme280mon started`    | low      | at startup, right after the config is loaded; the body carries the version and hostname                |
+| `⏹️ bme280mon stopped`    | low      | on `SIGINT`/`SIGTERM` (`systemctl stop`/`restart`), or on a fatal error, whose reason is in the body   |
+
+Both are low priority, so they won't buzz your phone. Because a fatal exit is reported, a restart loop shows up as repeating start/stop pairs. A failure to load the config is the one exit that can't be announced — ntfy isn't configured yet at that point, so check `journalctl -u bme280mon` if the service never says it started.
+
 ## Metrics
 
 `bme280mon` serves Prometheus-format metrics over HTTP, by default on `:9101`:
