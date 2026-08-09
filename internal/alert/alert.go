@@ -88,6 +88,29 @@ type Notifier interface {
 	Send(ctx context.Context, n Notification) error
 }
 
+// WithLocation wraps next so every notification sent through it has its title
+// prefixed with location, letting callers work with a plain Notifier without
+// threading location through themselves. An empty location returns next
+// unchanged, so a single-sensor deployment pays no cost for the wrapper.
+func WithLocation(location string, next Notifier) Notifier {
+	if location == "" {
+		return next
+	}
+	return locatedNotifier{location: location, next: next}
+}
+
+// locatedNotifier prefixes every notification's title with location before
+// delegating to next.
+type locatedNotifier struct {
+	location string
+	next     Notifier
+}
+
+func (l locatedNotifier) Send(ctx context.Context, n Notification) error {
+	n.Title = Label(l.location, n.Title)
+	return l.next.Send(ctx, n)
+}
+
 // Options configures a Ntfy client.
 type Options struct {
 	Server  string

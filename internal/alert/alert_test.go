@@ -96,6 +96,37 @@ func TestSendBuildRequestErrorRedactsTopic(t *testing.T) {
 	assertRedactedSendErr(t, err)
 }
 
+type stubNotifier struct {
+	sent []Notification
+}
+
+func (s *stubNotifier) Send(_ context.Context, n Notification) error {
+	s.sent = append(s.sent, n)
+	return nil
+}
+
+func TestWithLocationPrefixesTitle(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubNotifier{}
+	notifier := WithLocation("attic", stub)
+	if err := notifier.Send(context.Background(), Notification{Title: "hi"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if got := stub.sent[0].Title; got != "attic: hi" {
+		t.Errorf("title = %q, want %q", got, "attic: hi")
+	}
+}
+
+func TestWithLocationEmptyReturnsSameNotifier(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubNotifier{}
+	if got := WithLocation("", stub); got != Notifier(stub) {
+		t.Errorf("WithLocation(\"\", next) = %v, want next unchanged", got)
+	}
+}
+
 func TestLabel(t *testing.T) {
 	t.Parallel()
 	const title = "⚠️ Humidity high: 63%"
