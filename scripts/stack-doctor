@@ -1,0 +1,198 @@
+#!/bin/bash
+#
+# (c) Copyright 2026 Eric Paul Forgette
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Verifies a bme280mon monitoring stack install. Read-only and idempotent.
+# Installed on the Pi by the stack installer as /usr/local/bin/stack-doctor.
+# Run on the Pi:  sudo stack-doctor
+
+set -uo pipefail   # deliberately no -e: every check must run, then report
+
+# Several checks read root-only files (/etc/grafana/grafana.ini is 640
+# root:grafana; /etc/victoria-metrics is 750). Without root those fail for
+# permission reasons indistinguishable from a real misconfiguration, so refuse
+# to run rather than report misleading FAILs.
+if [[ $EUID -ne 0 ]]; then
+    echo "Error: this script must be run as root (try: sudo stack-doctor)." >&2
+    exit 1
+fi
+
+VM_URL=http://127.0.0.1:8428
+FAILURES=0
+
+pass() { printf '  \033[32mPASS\033[0m  %s\n' "$1"; }
+fail() { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; FAILURES=$((FAILURES + 1)); }
+note() { printf '        %s\n' "$1"; }
+
+check() {  # check <description> <command...>
+    local desc=$1; shift
+    if "$@" >/dev/null 2>&1; then pass "${desc}"; else fail "${desc}"; fi
+}
+
+echo "bme280mon monitoring stack verification"
+echo ""
+echo "Services:"
+for svc in bme280mon victoria-metrics node_exporter grafana-server; do
+    check "${svc} is active" systemctl is-active --quiet "${svc}.service"
+done
+
+echo ""
+echo "Unit files:"
+for unit in victoria-metrics node_exporter; do
+    check "${unit}.service passes systemd-analyze verify" \
+        systemd-analyze verify "/etc/systemd/system/${unit}.service"
+done
+echo ""
+echo "Port bindings:"
+LISTENERS=$(ss -ltnH | awk '{print $4}')
+
+check_loopback_only() {  # check_loopback_only <port> <what>
+    local port=$1 what=$2
+    if grep -qE "^(0\.0\.0\.0|\*|\[::\]):${port}$" <<<"${LISTENERS}"; then
+        fail "${what} (:${port}) is loopback-only"
+        if [[ "${port}" == "9101" ]]; then
+            note "bme280mon is listening on all interfaces. Set"
+            note "metrics_addr: \"127.0.0.1:9101\" in /etc/bme280mon/config.yaml"
+            note "and restart it. Installs predating the stack keep the old value."
+        fi
+    elif grep -qE "^127\.0\.0\.1:${port}$" <<<"${LISTENERS}"; then
+        pass "${what} (:${port}) is loopback-only"
+    else
+        fail "${what} (:${port}) is not listening at all"
+    fi
+}
+
+check_loopback_only 8428 "VictoriaMetrics"
+check_loopback_only 9100 "node_exporter"
+check_loopback_only 9101 "bme280mon"
+
+if grep -qE "^(0\.0\.0\.0|\*|\[::\]):3000$" <<<"${LISTENERS}"; then
+    pass "Grafana (:3000) is reachable from the LAN"
+else
+    fail "Grafana (:3000) is not listening on all interfaces"
+fi
+echo ""
+echo "Configuration:"
+check "scrape config passes dry run" \
+    /usr/local/bin/victoria-metrics \
+        -promscrape.config=/etc/victoria-metrics/scrape.yaml \
+        -promscrape.config.dryRun
+
+# VictoriaMetrics formats /flags values with %q, so it emits retentionPeriod="30d".
+# Accept it quoted or bare rather than depending on that formatting choice.
+if curl -fsS --max-time 5 "${VM_URL}/flags" 2>/dev/null | grep -qE 'retentionPeriod="?30d"?'; then
+    pass "retention is 30d"
+else
+    fail "retention is 30d"
+    note "actual: $(curl -fsS --max-time 5 "${VM_URL}/flags" 2>/dev/null | tr ' ' '\n' | grep retentionPeriod || echo '<unset>')"
+fi
+echo ""
+
+echo "Data (proves sensor -> scrape -> store -> query):"
+query_has_data() {  # query_has_data <promql>
+    curl -fsS --max-time 5 --get --data-urlencode "query=$1" \
+        "${VM_URL}/api/v1/query" 2>/dev/null | grep -q '"result":\[{'
+}
+
+# The scrape interval is 30s and VictoriaMetrics staggers first scrapes, so on a
+# just-installed Pi these legitimately have no samples for up to ~60s. Retry the
+# data queries -- and only these; the service, port and TLS checks are immediate
+# and must not be softened -- until every metric reports or the window closes.
+# Metrics that pass drop out of the retry set, and FAILURES is incremented once
+# per still-failing metric after the loop, never once per attempt.
+DATA_DEADLINE=$((SECONDS + 60))
+# If VictoriaMetrics is not answering at all, waiting cannot help: collapse the
+# window so a genuinely-down stack still fails fast.
+if ! curl -fsS --max-time 5 -o /dev/null "${VM_URL}/health" 2>/dev/null; then
+    DATA_DEADLINE=${SECONDS}
+fi
+
+PENDING=(bme280_humidity_percent bme280_temperature_celsius
+         node_cpu_seconds_total vm_rows)
+while :; do
+    STILL_PENDING=()
+    for q in "${PENDING[@]}"; do
+        if query_has_data "${q}"; then
+            pass "${q} has samples"
+        else
+            STILL_PENDING+=("${q}")
+        fi
+    done
+    PENDING=("${STILL_PENDING[@]}")
+    if [[ ${#PENDING[@]} -eq 0 || ${SECONDS} -ge ${DATA_DEADLINE} ]]; then
+        break
+    fi
+    note "waiting for the first scrape (${#PENDING[@]} metric(s) still empty)..."
+    sleep 5
+done
+for q in "${PENDING[@]}"; do
+    fail "${q} has samples"
+done
+echo ""
+echo "TLS:"
+if openssl s_client -connect 127.0.0.1:3000 -tls1_2 </dev/null 2>/dev/null | grep -q 'BEGIN CERTIFICATE'; then
+    pass "Grafana accepts TLS 1.2"
+else
+    fail "Grafana accepts TLS 1.2"
+fi
+
+# TLS 1.1 must be refused. Two independent signals, because neither alone is
+# sufficient: the handshake test only means something if THIS openssl can
+# actually offer TLS 1.1 -- some builds drop it entirely, and then a "no
+# certificate" result looks identical to a refusal -- while the config
+# assertion proves intent but not that it took effect.
+if openssl s_client -help 2>&1 | grep -q -- '-tls1_1'; then
+    if openssl s_client -connect 127.0.0.1:3000 -tls1_1 \
+            -cipher 'DEFAULT@SECLEVEL=0' </dev/null 2>/dev/null | grep -q 'BEGIN CERTIFICATE'; then
+        fail "Grafana refuses TLS 1.1"
+    else
+        pass "Grafana refuses TLS 1.1"
+    fi
+else
+    fail "Grafana refuses TLS 1.1 (inconclusive)"
+    note "this openssl cannot offer TLS 1.1, so the handshake proves nothing;"
+    note "counted as a failure rather than a vacuous pass"
+fi
+
+if grep -qE '^[[:space:]]*min_tls_version[[:space:]]*=[[:space:]]*TLS1\.2' /etc/grafana/grafana.ini; then
+    pass "grafana.ini sets min_tls_version = TLS1.2"
+else
+    fail "grafana.ini sets min_tls_version = TLS1.2"
+fi
+
+if openssl x509 -in /etc/grafana/tls/grafana.crt -noout -text 2>/dev/null \
+        | grep -q 'Subject Alternative Name'; then
+    pass "certificate carries SANs"
+else
+    fail "certificate carries SANs"
+    note "browsers ignore CN; a cert without SANs will be rejected everywhere"
+fi
+
+check "Grafana answers /api/health over HTTPS" \
+    curl -fsSk --max-time 5 -o /dev/null https://127.0.0.1:3000/api/health
+
+# The installer's two admin/admin guards only run at install time. The managed
+# grafana.ini has no [security] section, so admin_user/admin_password fall back
+# to defaults.ini's admin/admin -- losing /var/lib/grafana and rebooting would
+# re-create the factory credential on a server that is already LAN-facing, and
+# nothing else on the device would ever notice. This is the steady-state check.
+if curl -fsSk --max-time 5 -o /dev/null -u admin:admin https://127.0.0.1:3000/api/org; then
+    fail "Grafana rejects the default admin/admin credential"
+    note "the factory credential is live on a LAN-facing server -- stop grafana-server"
+    note "and re-run the stack installer to set a real password"
+else
+    pass "Grafana rejects the default admin/admin credential"
+fi
+echo ""
+if [[ ${FAILURES} -eq 0 ]]; then
+    echo "All checks passed."
+    exit 0
+fi
+echo "${FAILURES} check(s) failed."
+exit 1

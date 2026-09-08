@@ -1,0 +1,14 @@
+# Provisioned Grafana datasource. Note: provisioned datasources are read-only
+# in the Grafana UI -- that is intended. Dashboards remain hand-editable.
+apiVersion: 1
+
+datasources:
+  - name: VictoriaMetrics
+    type: prometheus
+    access: proxy
+    url: http://127.0.0.1:8428
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      timeInterval: 30s

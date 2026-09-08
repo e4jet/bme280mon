@@ -32,6 +32,8 @@ go.work.sum
 # Build artifacts
 /bme280mon
 bme280mon-*.install
+/_stack_dist/
+bme280mon-stack-*.install
 
 # Editor/IDE
 # .idea/
