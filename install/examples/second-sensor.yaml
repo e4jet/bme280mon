@@ -1,0 +1,27 @@
+# bme280mon configuration for a SECOND sensor on the same Raspberry Pi.
+#
+# Copy this to /etc/bme280mon/<name>.yaml and start it with the template unit:
+#
+#   sudo install -m 640 -o bme280mon -g bme280mon \
+#       /etc/bme280mon/examples/second-sensor.yaml /etc/bme280mon/attic.yaml
+#   sudo systemctl enable --now bme280mon@attic
+#
+# Wire the second BME280 to the same 3.3V/GND/SCL/SDA pins as the first, but
+# strap its SDO pin to 3.3V instead of GND so it answers at 0x77. Confirm both
+# show up with: i2cdetect -y 1
+#
+# Three keys MUST differ from the first sensor's config:
+#   i2c_address  - the two sensors cannot share an address
+#   metrics_addr - the two instances cannot share a port (a clash is a startup
+#                  failure, reported over ntfy)
+#   location     - what tells their alerts apart, since they share a hostname
+poll_interval: 30s
+humidity_threshold: 60.0
+humidity_buffer: 3.0
+i2c_address: 0x77           # second sensor: SDO strapped to 3.3V
+location: attic             # names this sensor in alerts and metrics
+ntfy_server: https://ntfy.sh
+ntfy_topic: ""              # REQUIRED: usually the same topic as the first sensor
+metrics_addr: "127.0.0.1:9102"  # must not collide with the first instance's port
+sensor_fail_limit: 5
+http_timeout: 10s

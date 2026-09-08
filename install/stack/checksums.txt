@@ -1,0 +1,2 @@
+4364b2dffe8f532c28bd427307d1609248696f25d837678bf86410059f5b9b85  victoria-metrics.tar.gz
+ad35b605f9954b9f1ffddf5ba054bdc5a98d790b9eae5291e1eeb83f1ecbd0e7  node_exporter.tar.gz

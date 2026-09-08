@@ -24,12 +24,17 @@ import (
 	"net/url"
 	"os"
 	"time"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
 
 // ErrInvalidConfig is returned (wrapped) when configuration fails validation.
 var ErrInvalidConfig = errors.New("invalid config")
+
+// maxLocationLen bounds the location label. It travels in an HTTP header (the
+// ntfy title) and in a Prometheus label, so it stays short and printable.
+const maxLocationLen = 64
 
 // Config is the immutable runtime configuration.
 type Config struct {
@@ -42,6 +47,10 @@ type Config struct {
 	MetricsAddr       string
 	SensorFailLimit   int
 	HTTPTimeout       time.Duration
+	// Location names the sensor's site (e.g. "attic") when several instances
+	// run on one host. Empty means unlabelled: notification titles and metric
+	// series are then identical to a single-sensor deployment.
+	Location string
 }
 
 // rawConfig mirrors the YAML file; durations are strings so we can report a
@@ -56,6 +65,7 @@ type rawConfig struct {
 	MetricsAddr       string  `yaml:"metrics_addr"`
 	SensorFailLimit   int     `yaml:"sensor_fail_limit"`
 	HTTPTimeout       string  `yaml:"http_timeout"`
+	Location          string  `yaml:"location"`
 }
 
 //nolint:mnd
@@ -122,6 +132,7 @@ func Load(path string) (Config, error) {
 		MetricsAddr:       raw.MetricsAddr,
 		SensorFailLimit:   raw.SensorFailLimit,
 		HTTPTimeout:       timeout,
+		Location:          raw.Location,
 	}
 	if err := c.Validate(); err != nil {
 		return Config{}, err
@@ -171,6 +182,17 @@ func (c Config) Validate() error {
 	}
 	if _, _, err := net.SplitHostPort(c.MetricsAddr); err != nil {
 		return fmt.Errorf("metrics_addr %q invalid: %w", c.MetricsAddr, ErrInvalidConfig)
+	}
+	// The location is sent as an HTTP header value (the ntfy title), so a
+	// control character in it would fail every notification at request build
+	// time. Reject it here instead, where the error is actionable.
+	if len(c.Location) > maxLocationLen {
+		return fmt.Errorf("location %q exceeds %d characters: %w", c.Location, maxLocationLen, ErrInvalidConfig)
+	}
+	for _, r := range c.Location {
+		if !unicode.IsPrint(r) {
+			return fmt.Errorf("location %q contains a non-printable character: %w", c.Location, ErrInvalidConfig)
+		}
 	}
 	return nil
 }

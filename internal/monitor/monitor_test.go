@@ -67,7 +67,7 @@ func newTestMonitor(fr sensor.Reader, fd Dispatcher) *Monitor {
 		Reader:     fr,
 		Dispatcher: fd,
 		Detector:   detector.New(60, 3),
-		Metrics:    metrics.New(),
+		Metrics:    metrics.New(""),
 		Interval:   time.Hour,
 		FailLimit:  3,
 		Logger:     slog.New(slog.DiscardHandler),
