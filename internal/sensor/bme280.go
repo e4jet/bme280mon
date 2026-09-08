@@ -57,7 +57,7 @@ func Open(addr uint16) (*BME280, error) {
 
 // hostInit runs periph's host.Init while suppressing its standard-logger
 // output. host.Init eagerly initializes every registered driver and logs a
-// failure line for each device it cannot open — including the GPIO chips this
+// failure line for each device it cannot open, including the GPIO chips this
 // daemon neither uses nor is granted under its least-privilege sandbox. Real
 // I2C failures still surface through the errors returned by i2creg.Open and
 // bmxx80.NewI2C below, which run with logging restored.

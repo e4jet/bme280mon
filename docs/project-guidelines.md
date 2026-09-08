@@ -61,6 +61,13 @@ The terms described in [rfc2119](https://datatracker.ietf.org/doc/html/rfc2119) 
 - **SHOULD** write clear and concise comments for exported functions and structs
 - **SHOULD** declare function input structs before the function consuming them
 
+## Documentation
+
+Applies to every markdown file in this repo, plus code comments and commit messages.
+
+- **MUST NOT** hard-wrap markdown at a fixed column width. Write each paragraph, list item, and table row as one unbroken line and let the renderer soft-wrap it
+- **MUST** be concise and clinical. State facts and tradeoffs plainly, with no superlatives, hype, or filler
+
 ## Errors
 
 - **MUST** wrap the most relevant error with `%w` and context: `fmt.Errorf("open %s: %w", p, err)`
@@ -78,13 +85,14 @@ The terms described in [rfc2119](https://datatracker.ietf.org/doc/html/rfc2119) 
 
 - **MUST** `ctx context.Context` be the first parameter to a function
 - **MUST NOT** store ctx in structs
-- **MUST** propagate non‑nil `ctx`
+- **MUST** propagate non-nil `ctx`
 - **SHOULD** use `context.Context` for request-scoped values and cancellation
 
 ## Testing
 
-- **SHOULD** use table‑driven tests. These must be deterministic and hermetic by default
-- **MUST** run `-race` in CI; add `t.Cleanup` for teardown
+- **SHOULD** use table-driven tests. These must be deterministic and hermetic by default
+- **MUST** run `-race` in CI
+- **MUST** add `t.Cleanup` for teardown
 - **SHOULD** mark safe tests with `t.Parallel()`
 - **MUST** use build tags for unit tests: `//go:build unit` and name the file `xxx_test.go`
 - **MUST** use build tags for integration tests: `//go:build integration` and name the file `xxx_integration_test.go`
