@@ -2,7 +2,7 @@
 
 `bme280mon` exposes readings as Prometheus metrics but does not store them. This stack adds a time-series database that keeps 30 days of history and a Grafana instance to look at it. Everything runs on the same Raspberry Pi.
 
-Design rationale lives in `docs/superpowers/specs/2026-08-08-monitoring-stack-design.md`.
+Design rationale lives in the implementation [spec](docs/specs/2026-08-08-monitoring-stack-design.md).
 
 ## What gets installed
 
@@ -79,7 +79,6 @@ ssh <host> sudo cat /etc/grafana/tls/grafana.crt > ~/Downloads/grafana-pi.crt
 
 - **macOS:** open Keychain Access -> System, drag the `.crt` in, open it, then set Trust -> "When using this certificate: Always Trust".
 - **Linux:** `sudo cp grafana-pi.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates`
-- **iOS/Android:** email or AirDrop the file to the device and install it as a trusted certificate in Settings.
 
 The certificate is valid for 825 days and carries subject-alternative names for the Pi's hostname, `<hostname>.local`, and its LAN IP address. Use one of those in the URL. An address not in the SAN list will still warn.
 
