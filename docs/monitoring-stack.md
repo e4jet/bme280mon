@@ -2,7 +2,7 @@
 
 `bme280mon` exposes readings as Prometheus metrics but does not store them. This stack adds a time-series database that keeps 30 days of history and a Grafana instance to look at it. Everything runs on the same Raspberry Pi.
 
-Design rationale lives in the implementation [spec](docs/specs/2026-08-08-monitoring-stack-design.md).
+Design rationale lives in the implementation [spec](specs/2026-08-08-monitoring-stack-design.md).
 
 ## What gets installed
 
