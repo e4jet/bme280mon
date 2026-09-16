@@ -1,6 +1,6 @@
 GO_VERSION = 1.26
 PACKAGE_ROOT = github.com/e4jet/bme280mon
-TAG = v0.1.0
+TAG = v1.0.0
 GOOS = linux
 GOARCH = arm64
 
