@@ -1,6 +1,6 @@
 # bme280mon
 
-A small Go daemon that monitors room humidity (and records temperature and pressure) using a GY-BME280 sensor on a Raspberry Pi 3/4/5. When humidity crosses a configurable threshold it pushes a phone alert via [ntfy](https://ntfy.sh). A hysteresis state machine limits that to one alert per crossing. Readings are also exposed as Prometheus metrics for scraping into VictoriaMetrics (or any Prometheus-compatible collector).
+A small Go daemon that monitors room humidity and temperature (and records pressure) using a GY-BME280 sensor on a Raspberry Pi 3/4/5. When humidity or temperature crosses a configurable threshold it pushes a phone alert via [ntfy](https://ntfy.sh). A hysteresis state machine limits that to one alert per crossing. Readings are also exposed as Prometheus metrics for scraping into VictoriaMetrics (or any Prometheus-compatible collector).
 
 ## Hardware
 
@@ -75,7 +75,7 @@ Build and package are possible on a development machine (macOS or Linux) and can
 1. Choose a topic name and set it as `ntfy_topic` in `/etc/bme280mon/config.yaml`.
 2. Install the **ntfy** app on your phone (iOS App Store / Google Play), or use the web app at <https://ntfy.sh/app>.
 3. In the app, subscribe to the same topic name you put in the config.
-4. When humidity crosses the threshold you'll get a push notification, for example "Humidity high: 63%". A follow-up low-priority notification arrives once it recovers back below the threshold minus the hysteresis buffer. Sensor failures are reported the same way if reads fail repeatedly.
+4. When humidity crosses the threshold you'll get a push notification, for example "⚠️ Humidity high: 63%". Temperature alerts the same way at both ends of its band, for example "⚠️ Temperature low: 14°C" or "⚠️ Temperature high: 31°C". Each is followed by a low-priority notification once the reading recovers past the hysteresis buffer. Sensor failures are reported the same way if reads fail repeatedly.
 
 `bme280mon` also announces its own lifecycle:
 
@@ -154,18 +154,21 @@ Don't name an instance `config`. `/etc/bme280mon/config.yaml` belongs to the pla
 
 `/etc/bme280mon/config.yaml`:
 
-| Key                  | Default           | Meaning                         |
-|----------------------|-------------------|---------------------------------|
-| `poll_interval`      | `30s`             | time between reads              |
-| `humidity_threshold` | `60.0`            | percent RH counted as "high"    |
-| `humidity_buffer`    | `3.0`             | hysteresis buffer, recovery gap |
-| `i2c_address`        | `0x76`            | BME280 I2C address (0x76/0x77)  |
-| `location`           | *(empty)*         | sensor site name, see below     |
-| `ntfy_server`        | `https://ntfy.sh` | ntfy base URL                   |
-| `ntfy_topic`         | *(required)*      | ntfy topic (treat as secret)    |
-| `metrics_addr`       | `:9101`           | Prometheus /metrics listen addr |
-| `sensor_fail_limit`  | `5`               | failures before alerting        |
-| `http_timeout`       | `10s`             | ntfy request timeout            |
+| Key                          | Default           | Meaning                         |
+|------------------------------|-------------------|---------------------------------|
+| `poll_interval`              | `30s`             | time between reads              |
+| `humidity_threshold`         | `60.0`            | percent RH counted as "high"    |
+| `humidity_buffer`            | `3.0`             | hysteresis buffer, recovery gap |
+| `temperature_low_threshold`  | `15.0`            | degrees C counted as "low"      |
+| `temperature_high_threshold` | `30.0`            | degrees C counted as "high"     |
+| `temperature_buffer`         | `1.0`             | hysteresis buffer, both ends    |
+| `i2c_address`                | `0x76`            | BME280 I2C address (0x76/0x77)  |
+| `location`                   | *(empty)*         | sensor site name, see below     |
+| `ntfy_server`                | `https://ntfy.sh` | ntfy base URL                   |
+| `ntfy_topic`                 | *(required)*      | ntfy topic (treat as secret)    |
+| `metrics_addr`               | `:9101`           | Prometheus /metrics listen addr |
+| `sensor_fail_limit`          | `5`               | failures before alerting        |
+| `http_timeout`               | `10s`             | ntfy request timeout            |
 
 ## Development
 

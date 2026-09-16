@@ -18,6 +18,9 @@
 poll_interval: 30s
 humidity_threshold: 60.0
 humidity_buffer: 3.0
+temperature_low_threshold: 15.0
+temperature_high_threshold: 30.0
+temperature_buffer: 1.0
 i2c_address: 0x77           # second sensor: SDO strapped to 3.3V
 location: attic             # names this sensor in alerts and metrics
 ntfy_server: https://ntfy.sh

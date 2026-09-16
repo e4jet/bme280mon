@@ -92,7 +92,7 @@ type Notifier interface {
 // prefixed with location, letting callers work with a plain Notifier without
 // threading location through themselves. An empty location returns next
 // unchanged, so a single-sensor deployment pays no cost for the wrapper.
-func WithLocation(location string, next Notifier) Notifier {
+func WithLocation(location string, next Notifier) Notifier { //nolint:ireturn // the two return paths are different concrete types, so the interface is the only common return type
 	if location == "" {
 		return next
 	}
