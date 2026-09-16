@@ -14,8 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Command bme280mon reads a BME280 sensor over I2C, alerts on high humidity
-// via ntfy, and exposes Prometheus metrics.
+// Command bme280mon reads a BME280 sensor over I2C, alerts on high humidity and
+// on temperature outside its configured band via ntfy, and exposes Prometheus
+// metrics.
 package main
 
 import (
@@ -116,13 +117,14 @@ func serve(ctx context.Context, cfg config.Config, notifier alert.Notifier, logg
 	})
 
 	mon := monitor.New(monitor.Deps{
-		Reader:     reader,
-		Dispatcher: disp,
-		Detector:   detector.New(cfg.HumidityThreshold, cfg.HumidityBuffer),
-		Metrics:    m,
-		Interval:   cfg.PollInterval,
-		FailLimit:  cfg.SensorFailLimit,
-		Logger:     logger,
+		Reader:      reader,
+		Dispatcher:  disp,
+		Humidity:    detector.NewHigh(cfg.HumidityThreshold, cfg.HumidityBuffer),
+		Temperature: detector.NewBand(cfg.TemperatureLowThreshold, cfg.TemperatureHighThreshold, cfg.TemperatureBuffer),
+		Metrics:     m,
+		Interval:    cfg.PollInterval,
+		FailLimit:   cfg.SensorFailLimit,
+		Logger:      logger,
 	})
 
 	runErr := mon.Run(ctx)

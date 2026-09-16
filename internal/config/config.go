@@ -20,6 +20,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -36,17 +37,28 @@ var ErrInvalidConfig = errors.New("invalid config")
 // ntfy title) and in a Prometheus label, so it stays short and printable.
 const maxLocationLen = 64
 
+// The BME280's rated operating range in degrees Celsius. A threshold outside it
+// could never fire, which is a misconfiguration worth reporting at startup
+// rather than ignoring silently.
+const (
+	minTemperatureC = -40
+	maxTemperatureC = 85
+)
+
 // Config is the immutable runtime configuration.
 type Config struct {
-	PollInterval      time.Duration
-	HumidityThreshold float64
-	HumidityBuffer    float64
-	I2CAddress        uint16
-	NtfyServer        string
-	NtfyTopic         string
-	MetricsAddr       string
-	SensorFailLimit   int
-	HTTPTimeout       time.Duration
+	PollInterval             time.Duration
+	HumidityThreshold        float64
+	HumidityBuffer           float64
+	TemperatureLowThreshold  float64
+	TemperatureHighThreshold float64
+	TemperatureBuffer        float64
+	I2CAddress               uint16
+	NtfyServer               string
+	NtfyTopic                string
+	MetricsAddr              string
+	SensorFailLimit          int
+	HTTPTimeout              time.Duration
 	// Location names the sensor's site (e.g. "attic") when several instances
 	// run on one host. Empty means unlabelled: notification titles and metric
 	// series are then identical to a single-sensor deployment.
@@ -56,29 +68,35 @@ type Config struct {
 // rawConfig mirrors the YAML file; durations are strings so we can report a
 // clear validation error on a bad value.
 type rawConfig struct {
-	PollInterval      string  `yaml:"poll_interval"`
-	HumidityThreshold float64 `yaml:"humidity_threshold"`
-	HumidityBuffer    float64 `yaml:"humidity_buffer"`
-	I2CAddress        uint16  `yaml:"i2c_address"`
-	NtfyServer        string  `yaml:"ntfy_server"`
-	NtfyTopic         string  `yaml:"ntfy_topic"`
-	MetricsAddr       string  `yaml:"metrics_addr"`
-	SensorFailLimit   int     `yaml:"sensor_fail_limit"`
-	HTTPTimeout       string  `yaml:"http_timeout"`
-	Location          string  `yaml:"location"`
+	PollInterval             string  `yaml:"poll_interval"`
+	HumidityThreshold        float64 `yaml:"humidity_threshold"`
+	HumidityBuffer           float64 `yaml:"humidity_buffer"`
+	TemperatureLowThreshold  float64 `yaml:"temperature_low_threshold"`
+	TemperatureHighThreshold float64 `yaml:"temperature_high_threshold"`
+	TemperatureBuffer        float64 `yaml:"temperature_buffer"`
+	I2CAddress               uint16  `yaml:"i2c_address"`
+	NtfyServer               string  `yaml:"ntfy_server"`
+	NtfyTopic                string  `yaml:"ntfy_topic"`
+	MetricsAddr              string  `yaml:"metrics_addr"`
+	SensorFailLimit          int     `yaml:"sensor_fail_limit"`
+	HTTPTimeout              string  `yaml:"http_timeout"`
+	Location                 string  `yaml:"location"`
 }
 
 //nolint:mnd
 func defaults() rawConfig {
 	return rawConfig{
-		PollInterval:      "30s",
-		HumidityThreshold: 60,
-		HumidityBuffer:    3,
-		I2CAddress:        0x76,
-		NtfyServer:        "https://ntfy.sh",
-		MetricsAddr:       ":9101",
-		SensorFailLimit:   5,
-		HTTPTimeout:       "10s",
+		PollInterval:             "30s",
+		HumidityThreshold:        60,
+		HumidityBuffer:           3,
+		TemperatureLowThreshold:  15,
+		TemperatureHighThreshold: 30,
+		TemperatureBuffer:        1,
+		I2CAddress:               0x76,
+		NtfyServer:               "https://ntfy.sh",
+		MetricsAddr:              ":9101",
+		SensorFailLimit:          5,
+		HTTPTimeout:              "10s",
 	}
 }
 
@@ -123,21 +141,31 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	c := Config{
-		PollInterval:      poll,
-		HumidityThreshold: raw.HumidityThreshold,
-		HumidityBuffer:    raw.HumidityBuffer,
-		I2CAddress:        raw.I2CAddress,
-		NtfyServer:        raw.NtfyServer,
-		NtfyTopic:         raw.NtfyTopic,
-		MetricsAddr:       raw.MetricsAddr,
-		SensorFailLimit:   raw.SensorFailLimit,
-		HTTPTimeout:       timeout,
-		Location:          raw.Location,
+		PollInterval:             poll,
+		HumidityThreshold:        raw.HumidityThreshold,
+		HumidityBuffer:           raw.HumidityBuffer,
+		TemperatureLowThreshold:  raw.TemperatureLowThreshold,
+		TemperatureHighThreshold: raw.TemperatureHighThreshold,
+		TemperatureBuffer:        raw.TemperatureBuffer,
+		I2CAddress:               raw.I2CAddress,
+		NtfyServer:               raw.NtfyServer,
+		NtfyTopic:                raw.NtfyTopic,
+		MetricsAddr:              raw.MetricsAddr,
+		SensorFailLimit:          raw.SensorFailLimit,
+		HTTPTimeout:              timeout,
+		Location:                 raw.Location,
 	}
 	if err := c.Validate(); err != nil {
 		return Config{}, err
 	}
 	return c, nil
+}
+
+// outOfRange reports whether a temperature threshold falls outside the BME280's
+// rated operating range. Both thresholds are checked against both ends, so the
+// rule stands on its own rather than leaning on the ordering check below it.
+func outOfRange(v float64) bool {
+	return v < minTemperatureC || v > maxTemperatureC
 }
 
 // Validate enforces the invariants documented in the design spec.
@@ -162,11 +190,31 @@ func (c Config) Validate() error {
 	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
 		return fmt.Errorf("ntfy_server %q uses plaintext http to a non-loopback host, which would leak the secret topic; use https: %w", c.NtfyServer, ErrInvalidConfig)
 	}
+	// A NaN compares false against every range operator below, so without this
+	// pass it would satisfy every rule and reach a detector unvalidated, where
+	// it silently disables that quantity's alerts.
+	for _, f := range []struct {
+		name string
+		v    float64
+	}{
+		{"humidity_threshold", c.HumidityThreshold},
+		{"humidity_buffer", c.HumidityBuffer},
+		{"temperature_low_threshold", c.TemperatureLowThreshold},
+		{"temperature_high_threshold", c.TemperatureHighThreshold},
+		{"temperature_buffer", c.TemperatureBuffer},
+	} {
+		if math.IsNaN(f.v) {
+			return fmt.Errorf("%s must not be NaN: %w", f.name, ErrInvalidConfig)
+		}
+	}
 	if c.HumidityThreshold <= 0 || c.HumidityThreshold > 100 {
 		return fmt.Errorf("humidity_threshold %.1f out of range (0,100]: %w", c.HumidityThreshold, ErrInvalidConfig)
 	}
 	if c.HumidityBuffer < 0 || c.HumidityBuffer >= c.HumidityThreshold {
 		return fmt.Errorf("humidity_buffer %.1f must be in [0, threshold): %w", c.HumidityBuffer, ErrInvalidConfig)
+	}
+	if err := c.validateTemperature(); err != nil {
+		return err
 	}
 	if c.PollInterval <= 0 {
 		return fmt.Errorf("poll_interval must be > 0: %w", ErrInvalidConfig)
@@ -193,6 +241,28 @@ func (c Config) Validate() error {
 		if !unicode.IsPrint(r) {
 			return fmt.Errorf("location %q contains a non-printable character: %w", c.Location, ErrInvalidConfig)
 		}
+	}
+	return nil
+}
+
+// validateTemperature enforces the temperature band invariants: both thresholds
+// inside the sensor's rated range, an ordered band, and a buffer narrow enough
+// that the two recovery points stay ordered.
+func (c Config) validateTemperature() error {
+	if outOfRange(c.TemperatureLowThreshold) || outOfRange(c.TemperatureHighThreshold) {
+		return fmt.Errorf("temperature thresholds %.1f/%.1f outside the sensor's rated range [%d, %d]: %w", c.TemperatureLowThreshold, c.TemperatureHighThreshold, minTemperatureC, maxTemperatureC, ErrInvalidConfig)
+	}
+	if c.TemperatureLowThreshold >= c.TemperatureHighThreshold {
+		return fmt.Errorf("temperature_low_threshold %.1f must be below temperature_high_threshold %.1f: %w", c.TemperatureLowThreshold, c.TemperatureHighThreshold, ErrInvalidConfig)
+	}
+	if c.TemperatureBuffer < 0 {
+		return fmt.Errorf("temperature_buffer %.1f must be >= 0: %w", c.TemperatureBuffer, ErrInvalidConfig)
+	}
+	// Twice the buffer must fit inside the band, or the recovery point for a
+	// high alert sits below the recovery point for a low alert and a reading
+	// between them satisfies neither.
+	if 2*c.TemperatureBuffer >= c.TemperatureHighThreshold-c.TemperatureLowThreshold {
+		return fmt.Errorf("temperature_buffer %.1f is too wide for the band [%.1f, %.1f]: %w", c.TemperatureBuffer, c.TemperatureLowThreshold, c.TemperatureHighThreshold, ErrInvalidConfig)
 	}
 	return nil
 }

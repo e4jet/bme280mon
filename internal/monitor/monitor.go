@@ -44,24 +44,43 @@ type Dispatcher interface {
 // Deps are the collaborators the Monitor needs. Declared before Monitor per
 // the >3-arg struct convention.
 type Deps struct {
-	Reader     sensor.Reader
-	Dispatcher Dispatcher
-	Detector   *detector.Detector
-	Metrics    *metrics.Metrics
-	Interval   time.Duration
-	FailLimit  int
-	Logger     *slog.Logger
+	Reader      sensor.Reader
+	Dispatcher  Dispatcher
+	Humidity    *detector.Detector
+	Temperature *detector.Detector
+	Metrics     *metrics.Metrics
+	Interval    time.Duration
+	FailLimit   int
+	Logger      *slog.Logger
+}
+
+// quantity binds one measured value to its detector and to the wording of its
+// notifications, so humidity and temperature alerts are built by one code path.
+type quantity struct {
+	name     string                       // leads the notification title
+	unit     string                       // follows the value in the title
+	value    func(sensor.Reading) float64 // pulls this quantity out of a reading
+	detector *detector.Detector
 }
 
 // Monitor owns all mutable poll-loop state and runs in a single goroutine.
 type Monitor struct {
 	d          Deps
+	quantities []quantity
 	fails      int
 	sensorDown bool
 }
 
 // New returns a Monitor.
-func New(d Deps) *Monitor { return &Monitor{d: d} }
+func New(d Deps) *Monitor {
+	return &Monitor{
+		d: d,
+		quantities: []quantity{
+			{name: "Humidity", unit: "%", value: func(r sensor.Reading) float64 { return r.Humidity }, detector: d.Humidity},
+			{name: "Temperature", unit: "°C", value: func(r sensor.Reading) float64 { return r.Temperature }, detector: d.Temperature},
+		},
+	}
+}
 
 // Run polls every Interval until ctx is cancelled. It reads once immediately.
 // The notification dispatcher runs alongside on its own goroutine, tied to ctx.
@@ -114,31 +133,37 @@ func (m *Monitor) step(ctx context.Context) {
 	m.d.Metrics.Update(r.Temperature, r.Humidity, r.Pressure)
 	m.d.Logger.Info("reading", "humidity", r.Humidity, "temperature", r.Temperature, "pressure", r.Pressure)
 
-	if n, ok := humidityNotification(m.d.Detector.Update(r.Humidity), r); ok {
-		m.notify(n)
+	for _, q := range m.quantities {
+		if n, ok := notification(q, q.detector.Update(q.value(r)), r); ok {
+			m.notify(n)
+		}
 	}
 }
 
-// humidityNotification maps a detector transition to the notification to send.
+// notification maps a detector transition on q to the notification to send.
 // The second return is false when the event needs no notification.
-func humidityNotification(event detector.Event, r sensor.Reading) (alert.Notification, bool) {
-	body := fmt.Sprintf("Humidity %.1f%%, temperature %.1f°C", r.Humidity, r.Temperature)
+func notification(q quantity, event detector.Event, r sensor.Reading) (alert.Notification, bool) {
+	// Each event differs only in its title wording and priority, so the shared
+	// parts of the notification are built once, below.
+	form := ""
+	priority := alert.High
 	switch event {
 	case detector.HighAlert:
-		return alert.Notification{
-			Title:    fmt.Sprintf("⚠️ Humidity high: %.0f%%", r.Humidity),
-			Body:     body,
-			Priority: alert.High,
-		}, true
+		form = "⚠️ %s high: %.0f%s"
+	case detector.LowAlert:
+		form = "⚠️ %s low: %.0f%s"
 	case detector.Recovered:
-		return alert.Notification{
-			Title:    fmt.Sprintf("✅ Humidity back to normal: %.0f%%", r.Humidity),
-			Body:     body,
-			Priority: alert.Low,
-		}, true
+		form, priority = "✅ %s back to normal: %.0f%s", alert.Low
 	case detector.None:
+		return alert.Notification{}, false
 	}
-	return alert.Notification{}, false
+	return alert.Notification{
+		Title: fmt.Sprintf(form, q.name, q.value(r), q.unit),
+		// The body carries both readings whichever quantity alerted: the other
+		// one is the context you want when the phone buzzes.
+		Body:     fmt.Sprintf("Humidity %.1f%%, temperature %.1f°C", r.Humidity, r.Temperature),
+		Priority: priority,
+	}, true
 }
 
 // notify hands a notification to the dispatcher for asynchronous, retrying

@@ -2,6 +2,11 @@ module github.com/e4jet/bme280mon
 
 go 1.26
 
+// 1.26.6 is the first patch release fixing the five standard library
+// vulnerabilities govulncheck reports against 1.26.5 (GO-2026-6218, GO-2026-6090,
+// GO-2026-6089, GO-2026-5972, GO-2026-5026).
+toolchain go1.26.6
+
 require (
 	github.com/prometheus/client_golang v1.24.1
 	gopkg.in/yaml.v3 v3.0.1

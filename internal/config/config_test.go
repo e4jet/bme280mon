@@ -55,6 +55,10 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	if c.HTTPTimeout != 10*time.Second {
 		t.Errorf("HTTPTimeout = %v, want 10s", c.HTTPTimeout)
 	}
+	if c.TemperatureLowThreshold != 15 || c.TemperatureHighThreshold != 30 || c.TemperatureBuffer != 1 {
+		t.Errorf("temperature low/high/buffer = %v/%v/%v, want 15/30/1",
+			c.TemperatureLowThreshold, c.TemperatureHighThreshold, c.TemperatureBuffer)
+	}
 }
 
 func TestLoadLocation(t *testing.T) {
@@ -89,16 +93,27 @@ func TestLoadAllowsLoopbackHTTP(t *testing.T) {
 func TestLoadRejectsInvalid(t *testing.T) {
 	t.Parallel()
 	tests := map[string]string{
-		"missing topic":         "humidity_threshold: 60\n",
-		"buffer >= threshold":   "ntfy_topic: t\nhumidity_threshold: 5\nhumidity_buffer: 5\n",
-		"threshold over 100":    "ntfy_topic: t\nhumidity_threshold: 150\n",
-		"bad address":           "ntfy_topic: t\ni2c_address: 0x10\n",
-		"bad duration":          "ntfy_topic: t\npoll_interval: fortnight\n",
-		"plaintext http":        "ntfy_topic: t\nntfy_server: http://ntfy.example.com\n",
-		"unsafe topic":          "ntfy_topic: has/slash\n",
-		"bare metrics port":     "ntfy_topic: t\nmetrics_addr: \"9101\"\n",
-		"location with newline": "ntfy_topic: t\nlocation: \"attic\\nX-Injected: 1\"\n",
-		"location too long":     "ntfy_topic: t\nlocation: " + strings.Repeat("x", 65) + "\n",
+		"missing topic":                  "humidity_threshold: 60\n",
+		"buffer >= threshold":            "ntfy_topic: t\nhumidity_threshold: 5\nhumidity_buffer: 5\n",
+		"threshold over 100":             "ntfy_topic: t\nhumidity_threshold: 150\n",
+		"bad address":                    "ntfy_topic: t\ni2c_address: 0x10\n",
+		"bad duration":                   "ntfy_topic: t\npoll_interval: fortnight\n",
+		"plaintext http":                 "ntfy_topic: t\nntfy_server: http://ntfy.example.com\n",
+		"unsafe topic":                   "ntfy_topic: has/slash\n",
+		"bare metrics port":              "ntfy_topic: t\nmetrics_addr: \"9101\"\n",
+		"location with newline":          "ntfy_topic: t\nlocation: \"attic\\nX-Injected: 1\"\n",
+		"location too long":              "ntfy_topic: t\nlocation: " + strings.Repeat("x", 65) + "\n",
+		"temperature band inverted":      "ntfy_topic: t\ntemperature_low_threshold: 30\ntemperature_high_threshold: 15\n",
+		"temperature band collapsed":     "ntfy_topic: t\ntemperature_low_threshold: 20\ntemperature_high_threshold: 20\n",
+		"temperature low below range":    "ntfy_topic: t\ntemperature_low_threshold: -50\n",
+		"temperature high over range":    "ntfy_topic: t\ntemperature_high_threshold: 90\n",
+		"negative temperature buffer":    "ntfy_topic: t\ntemperature_buffer: -1\n",
+		"temperature buffer at boundary": "ntfy_topic: t\ntemperature_buffer: 7.5\n",
+		"temperature low NaN":            "ntfy_topic: t\ntemperature_low_threshold: .nan\n",
+		"temperature high NaN":           "ntfy_topic: t\ntemperature_high_threshold: .nan\n",
+		"temperature buffer NaN":         "ntfy_topic: t\ntemperature_buffer: .nan\n",
+		"humidity threshold NaN":         "ntfy_topic: t\nhumidity_threshold: .nan\n",
+		"humidity buffer NaN":            "ntfy_topic: t\nhumidity_buffer: .nan\n",
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -123,6 +138,32 @@ func TestLoadAcceptsMetricsAddrForms(t *testing.T) {
 			t.Parallel()
 			if _, err := Load(writeTemp(t, body)); err != nil {
 				t.Fatalf("Load(%q) error = %v, want nil", name, err)
+			}
+		})
+	}
+}
+
+func TestLoadAcceptsTemperatureBands(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		body              string
+		low, high, buffer float64
+	}{
+		"custom band": {"ntfy_topic: t\ntemperature_low_threshold: 5\ntemperature_high_threshold: 35\ntemperature_buffer: 2\n", 5, 35, 2},
+		// Default band is 15-to-30, width 15. 2*7.4 = 14.8 stays just under it,
+		// where 7.5 (in the reject table above) does not.
+		"buffer just inside the band": {"ntfy_topic: t\ntemperature_buffer: 7.4\n", 15, 30, 7.4},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			c, err := Load(writeTemp(t, tc.body))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if c.TemperatureLowThreshold != tc.low || c.TemperatureHighThreshold != tc.high || c.TemperatureBuffer != tc.buffer {
+				t.Errorf("temperature low/high/buffer = %v/%v/%v, want %v/%v/%v",
+					c.TemperatureLowThreshold, c.TemperatureHighThreshold, c.TemperatureBuffer, tc.low, tc.high, tc.buffer)
 			}
 		})
 	}
