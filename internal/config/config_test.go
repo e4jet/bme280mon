@@ -114,6 +114,12 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		"temperature buffer NaN":         "ntfy_topic: t\ntemperature_buffer: .nan\n",
 		"humidity threshold NaN":         "ntfy_topic: t\nhumidity_threshold: .nan\n",
 		"humidity buffer NaN":            "ntfy_topic: t\nhumidity_buffer: .nan\n",
+		"daily report hour out of range": "ntfy_topic: t\ndaily_report_time: \"25:00\"\n",
+		"daily report hour only":         "ntfy_topic: t\ndaily_report_time: \"12\"\n",
+		"daily report word":              "ntfy_topic: t\ndaily_report_time: noon\n",
+		"daily report with seconds":      "ntfy_topic: t\ndaily_report_time: \"12:00:00\"\n",
+		"daily report empty":             "ntfy_topic: t\ndaily_report_time: \"\"\n",
+		"daily report disabled":          "ntfy_topic: t\ndaily_report_time: disabled\n",
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -164,6 +170,36 @@ func TestLoadAcceptsTemperatureBands(t *testing.T) {
 			if c.TemperatureLowThreshold != tc.low || c.TemperatureHighThreshold != tc.high || c.TemperatureBuffer != tc.buffer {
 				t.Errorf("temperature low/high/buffer = %v/%v/%v, want %v/%v/%v",
 					c.TemperatureLowThreshold, c.TemperatureHighThreshold, c.TemperatureBuffer, tc.low, tc.high, tc.buffer)
+			}
+		})
+	}
+}
+
+func TestLoadDailyReportTime(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		body         string
+		enabled      bool
+		hour, minute int
+	}{
+		"default":     {"ntfy_topic: t\n", true, 12, 0},
+		"custom time": {"ntfy_topic: t\ndaily_report_time: \"07:30\"\n", true, 7, 30},
+		"midnight":    {"ntfy_topic: t\ndaily_report_time: \"00:00\"\n", true, 0, 0},
+		"null":        {"ntfy_topic: t\ndaily_report_time:\n", true, 12, 0},
+		"disable":     {"ntfy_topic: t\ndaily_report_time: disable\n", false, 0, 0},
+		"DISABLE":     {"ntfy_topic: t\ndaily_report_time: DISABLE\n", false, 0, 0},
+		"Disable":     {"ntfy_topic: t\ndaily_report_time: \"Disable\"\n", false, 0, 0},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			c, err := Load(writeTemp(t, tc.body))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if c.DailyReportEnabled != tc.enabled || c.DailyReportHour != tc.hour || c.DailyReportMinute != tc.minute {
+				t.Errorf("daily report enabled/hour/minute = %v/%v/%v, want %v/%v/%v",
+					c.DailyReportEnabled, c.DailyReportHour, c.DailyReportMinute, tc.enabled, tc.hour, tc.minute)
 			}
 		})
 	}

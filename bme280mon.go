@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/e4jet/bme280mon/internal/alert"
 	"github.com/e4jet/bme280mon/internal/config"
@@ -34,11 +35,16 @@ import (
 	"github.com/e4jet/bme280mon/internal/dispatch"
 	"github.com/e4jet/bme280mon/internal/metrics"
 	"github.com/e4jet/bme280mon/internal/monitor"
+	"github.com/e4jet/bme280mon/internal/report"
 	"github.com/e4jet/bme280mon/internal/sensor"
 )
 
 // version is set at build time via -ldflags "-X main.version=...".
 var version = "dev"
+
+// staleReadings is how many poll intervals old a reading may be before the
+// daily report states its age.
+const staleReadings = 2
 
 func main() {
 	cfgPath := flag.String("config", "/etc/bme280mon/config.yaml", "path to config file")
@@ -125,6 +131,7 @@ func serve(ctx context.Context, cfg config.Config, notifier alert.Notifier, logg
 		Interval:    cfg.PollInterval,
 		FailLimit:   cfg.SensorFailLimit,
 		Logger:      logger,
+		Report:      dailyReport(cfg, dispatch.Deps{Notifier: notifier, Metrics: m, Logger: logger}),
 	})
 
 	runErr := mon.Run(ctx)
@@ -134,6 +141,25 @@ func serve(ctx context.Context, cfg config.Config, notifier alert.Notifier, logg
 		logger.Error("metrics server", "error", err)
 	}
 	return runErr
+}
+
+// dailyReport builds the daily report's schedule and its own dispatcher from
+// dd, or returns nil when the report is disabled.
+func dailyReport(cfg config.Config, dd dispatch.Deps) *monitor.DailyReport {
+	if !cfg.DailyReportEnabled {
+		return nil
+	}
+	return &monitor.DailyReport{
+		Schedule: report.New(report.Options{
+			Hour:     cfg.DailyReportHour,
+			Minute:   cfg.DailyReportMinute,
+			Location: time.Local, //nolint:gosmopolitan // the report follows the Pi's system time zone by design
+			Stale:    staleReadings * cfg.PollInterval,
+			Start:    time.Now(),
+		}),
+		Dispatcher: dispatch.New(dd),
+		Now:        time.Now,
+	}
 }
 
 // notifyLifecycle delivers a startup or shutdown notice synchronously. The

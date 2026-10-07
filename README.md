@@ -77,14 +77,17 @@ Build and package are possible on a development machine (macOS or Linux) and can
 3. In the app, subscribe to the same topic name you put in the config.
 4. When humidity crosses the threshold you'll get a push notification, for example "⚠️ Humidity high: 63%". Temperature alerts the same way at both ends of its band, for example "⚠️ Temperature low: 14°C" or "⚠️ Temperature high: 31°C". Each is followed by a low-priority notification once the reading recovers past the hysteresis buffer. Sensor failures are reported the same way if reads fail repeatedly.
 
-`bme280mon` also announces its own lifecycle:
+`bme280mon` also announces its own lifecycle and sends a daily reading:
 
 | Notification              | Priority | When                                                                                        |
 |---------------------------|----------|---------------------------------------------------------------------------------------------|
 | `▶️ bme280mon started`    | low      | at startup, right after the config is loaded. The body carries the version and hostname      |
 | `⏹️ bme280mon stopped`    | low      | on `SIGINT`/`SIGTERM` (`systemctl stop`/`restart`), or on a fatal error. The reason is in the body |
+| `📊 Daily: 21°C, 47%`      | low      | once a day at `daily_report_time` (local time). The body carries both readings, and the age of the reading if the sensor has not answered recently. `📊 Daily: no reading available` if there has been no successful read since start |
 
-When `location` is set, it leads every title from that instance (`attic: ▶️ bme280mon started`). When it isn't, titles are exactly as shown. Both are low priority, so they won't buzz your phone. Because a fatal exit is reported, a restart loop shows up as repeating start/stop pairs. A failure to load the config is the one exit that can't be announced, because ntfy isn't configured yet at that point. Check `journalctl -u bme280mon` if the service never says it started.
+When `location` is set, it leads every title from that instance (`attic: ▶️ bme280mon started`). When it isn't, titles are exactly as shown. All three are low priority, so they won't buzz your phone. Because a fatal exit is reported, a restart loop shows up as repeating start/stop pairs. A failure to load the config is the one exit that can't be announced, because ntfy isn't configured yet at that point. Check `journalctl -u bme280mon` if the service never says it started.
+
+The daily report uses the Pi's system time zone. Raspberry Pi OS often defaults to UTC or Europe/London. Set it with `sudo raspi-config` -> **Localisation Options** -> **Timezone**, then restart the service. A restart after the report time does not send a second report that day. A missing daily report means the daemon was not running at that time.
 
 ## Metrics
 
@@ -164,6 +167,7 @@ Don't name an instance `config`. `/etc/bme280mon/config.yaml` belongs to the pla
 | `temperature_buffer`         | `1.0`             | hysteresis buffer, both ends    |
 | `i2c_address`                | `0x76`            | BME280 I2C address (0x76/0x77)  |
 | `location`                   | *(empty)*         | sensor site name, see below     |
+| `daily_report_time`          | `12:00`           | local time of daily report, `disable` (any case) turns it off |
 | `ntfy_server`                | `https://ntfy.sh` | ntfy base URL                   |
 | `ntfy_topic`                 | *(required)*      | ntfy topic (treat as secret)    |
 | `metrics_addr`               | `:9101`           | Prometheus /metrics listen addr |

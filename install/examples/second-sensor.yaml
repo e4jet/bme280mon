@@ -23,6 +23,7 @@ temperature_high_threshold: 30.0
 temperature_buffer: 1.0
 i2c_address: 0x77           # second sensor: SDO strapped to 3.3V
 location: attic             # names this sensor in alerts and metrics
+daily_report_time: "12:00"
 ntfy_server: https://ntfy.sh
 ntfy_topic: ""              # REQUIRED: usually the same topic as the first sensor
 metrics_addr: "127.0.0.1:9102"  # must not collide with the first instance's port

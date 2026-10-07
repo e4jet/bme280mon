@@ -21,12 +21,14 @@ package monitor
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/e4jet/bme280mon/internal/alert"
 	"github.com/e4jet/bme280mon/internal/detector"
 	"github.com/e4jet/bme280mon/internal/metrics"
+	"github.com/e4jet/bme280mon/internal/report"
 	"github.com/e4jet/bme280mon/internal/sensor"
 )
 
@@ -221,5 +223,107 @@ func TestStepFailedReadDoesNotMoveDetectors(t *testing.T) {
 	}
 	if len(fd.sent) != 1 {
 		t.Fatalf("sent %d notifications, want 1 (the initial high alert): %+v", len(fd.sent), fd.sent)
+	}
+}
+
+// fakeClock is a settable wall clock for the report schedule.
+type fakeClock struct{ t time.Time }
+
+func (c *fakeClock) Now() time.Time { return c.t }
+
+// oct6 returns 2026-10-06 at hh:mm:ss UTC.
+func oct6(hh, mm, ss int) time.Time {
+	return time.Date(2026, time.October, 6, hh, mm, ss, 0, time.UTC)
+}
+
+// readAt builds a normal reading taken at ts.
+func readAt(ts time.Time) readResult {
+	r := temp(20)
+	r.r.Time = ts
+	return r
+}
+
+// newReportMonitor is newTestMonitor with a 12:00 UTC daily report, a one-minute
+// staleness limit, and the schedule started at clk's current time.
+func newReportMonitor(fr sensor.Reader, fd, rd Dispatcher, clk *fakeClock) *Monitor {
+	m := newTestMonitor(fr, fd)
+	m.d.Report = &DailyReport{
+		Schedule:   report.New(report.Options{Hour: 12, Location: time.UTC, Stale: time.Minute, Start: clk.t}),
+		Dispatcher: rd,
+		Now:        clk.Now,
+	}
+	return m
+}
+
+func TestReportGoesToReportDispatcherOnce(t *testing.T) {
+	t.Parallel()
+	times := []time.Time{oct6(11, 59, 30), oct6(12, 0, 0), oct6(12, 0, 30)}
+	fr := &fakeReader{}
+	for _, ts := range times {
+		fr.seq = append(fr.seq, readAt(ts))
+	}
+	clk := &fakeClock{t: times[0]}
+	fd, rd := &fakeDispatcher{}, &fakeDispatcher{}
+	m := newReportMonitor(fr, fd, rd, clk)
+	ctx := context.Background()
+	for _, ts := range times {
+		clk.t = ts
+		m.tick(ctx)
+	}
+	if len(fd.sent) != 0 {
+		t.Errorf("alert dispatcher got %d notifications, want 0: %+v", len(fd.sent), fd.sent)
+	}
+	if len(rd.sent) != 1 {
+		t.Fatalf("report dispatcher got %d notifications, want 1: %+v", len(rd.sent), rd.sent)
+	}
+	if rd.sent[0].Title != "📊 Daily: 20°C, 40%" {
+		t.Errorf("report title = %q", rd.sent[0].Title)
+	}
+}
+
+func TestReportUsesLastGoodReadingWhenSensorFails(t *testing.T) {
+	t.Parallel()
+	clk := &fakeClock{t: oct6(11, 59, 0)}
+	fr := &fakeReader{seq: []readResult{readAt(oct6(11, 59, 0)), fail()}}
+	fd, rd := &fakeDispatcher{}, &fakeDispatcher{}
+	m := newReportMonitor(fr, fd, rd, clk)
+	ctx := context.Background()
+	m.tick(ctx)
+	clk.t = oct6(12, 5, 0)
+	m.tick(ctx)
+	if len(rd.sent) != 1 {
+		t.Fatalf("report dispatcher got %d notifications, want 1: %+v", len(rd.sent), rd.sent)
+	}
+	if want := "(last reading 6m0s ago)"; !strings.HasSuffix(rd.sent[0].Body, want) {
+		t.Errorf("report body = %q, want suffix %q", rd.sent[0].Body, want)
+	}
+}
+
+func TestReportWithNoReadingSinceStart(t *testing.T) {
+	t.Parallel()
+	clk := &fakeClock{t: oct6(11, 0, 0)}
+	fr := &fakeReader{seq: []readResult{fail()}}
+	fd, rd := &fakeDispatcher{}, &fakeDispatcher{}
+	m := newReportMonitor(fr, fd, rd, clk)
+	clk.t = oct6(12, 0, 0)
+	m.tick(context.Background())
+	if len(rd.sent) != 1 || rd.sent[0].Title != "📊 Daily: no reading available" {
+		t.Fatalf("report dispatcher got %+v, want one no-reading report", rd.sent)
+	}
+}
+
+// With Report nil (disabled), tick must not touch the report path, and alerts
+// must flow as before.
+func TestTickWithoutReportOnlyAlerts(t *testing.T) {
+	t.Parallel()
+	fr := &fakeReader{seq: []readResult{hum(65), hum(55)}}
+	fd := &fakeDispatcher{}
+	m := newTestMonitor(fr, fd)
+	ctx := context.Background()
+	for range fr.seq {
+		m.tick(ctx)
+	}
+	if len(fd.sent) != 2 {
+		t.Fatalf("sent %d notifications, want 2: %+v", len(fd.sent), fd.sent)
 	}
 }

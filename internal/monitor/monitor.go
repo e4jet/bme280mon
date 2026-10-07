@@ -27,6 +27,7 @@ import (
 	"github.com/e4jet/bme280mon/internal/alert"
 	"github.com/e4jet/bme280mon/internal/detector"
 	"github.com/e4jet/bme280mon/internal/metrics"
+	"github.com/e4jet/bme280mon/internal/report"
 	"github.com/e4jet/bme280mon/internal/sensor"
 )
 
@@ -52,6 +53,20 @@ type Deps struct {
 	Interval    time.Duration
 	FailLimit   int
 	Logger      *slog.Logger
+	// Report enables the daily reading notification. Nil disables it.
+	Report *DailyReport
+}
+
+// DailyReport groups the daily report's collaborators, so enabling the report
+// supplies all of them at once. Every field is required.
+type DailyReport struct {
+	Schedule *report.Schedule
+	// Dispatcher delivers daily reports. It is separate from Deps.Dispatcher
+	// because a dispatcher keeps only its newest notification, and a report
+	// must never supersede an alert that is still being retried.
+	Dispatcher Dispatcher
+	// Now reads the wall clock for the schedule.
+	Now func() time.Time
 }
 
 // quantity binds one measured value to its detector and to the wording of its
@@ -65,10 +80,12 @@ type quantity struct {
 
 // Monitor owns all mutable poll-loop state and runs in a single goroutine.
 type Monitor struct {
-	d          Deps
-	quantities []quantity
-	fails      int
-	sensorDown bool
+	d           Deps
+	quantities  []quantity
+	fails       int
+	sensorDown  bool
+	last        sensor.Reading // most recent successful reading, for the daily report
+	haveReading bool
 }
 
 // New returns a Monitor.
@@ -83,23 +100,49 @@ func New(d Deps) *Monitor {
 }
 
 // Run polls every Interval until ctx is cancelled. It reads once immediately.
-// The notification dispatcher runs alongside on its own goroutine, tied to ctx.
+// The notification dispatchers run alongside on their own goroutines, tied to ctx.
 func (m *Monitor) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 	wg.Go(func() { m.d.Dispatcher.Run(ctx) })
+	if m.d.Report != nil {
+		wg.Go(func() { m.d.Report.Dispatcher.Run(ctx) })
+	}
 	defer wg.Wait()
 
 	ticker := time.NewTicker(m.d.Interval)
 	defer ticker.Stop()
-	m.step(ctx)
+	m.tick(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			m.step(ctx)
+			m.tick(ctx)
 		}
 	}
+}
+
+// tick performs one poll cycle, then sends the daily report if it is due. The
+// report check runs even when the read fails, so a failing sensor still
+// produces a report carrying the last good reading.
+func (m *Monitor) tick(ctx context.Context) {
+	m.step(ctx)
+	m.maybeReport()
+}
+
+// maybeReport enqueues the daily report when the schedule says it is due.
+func (m *Monitor) maybeReport() {
+	rep := m.d.Report
+	if rep == nil {
+		return
+	}
+	now := rep.Now()
+	if !rep.Schedule.Due(now) {
+		return
+	}
+	n := rep.Schedule.Notification(m.last, m.haveReading, now)
+	rep.Dispatcher.Enqueue(n)
+	m.d.Logger.Info("daily report queued", "title", n.Title)
 }
 
 // step performs one poll cycle.
@@ -130,6 +173,7 @@ func (m *Monitor) step(ctx context.Context) {
 		})
 	}
 	m.fails = 0
+	m.last, m.haveReading = r, true
 	m.d.Metrics.Update(r.Temperature, r.Humidity, r.Pressure)
 	m.d.Logger.Info("reading", "humidity", r.Humidity, "temperature", r.Temperature, "pressure", r.Pressure)
 
@@ -161,7 +205,7 @@ func notification(q quantity, event detector.Event, r sensor.Reading) (alert.Not
 		Title: fmt.Sprintf(form, q.name, q.value(r), q.unit),
 		// The body carries both readings whichever quantity alerted: the other
 		// one is the context you want when the phone buzzes.
-		Body:     fmt.Sprintf("Humidity %.1f%%, temperature %.1f°C", r.Humidity, r.Temperature),
+		Body:     r.Summary(),
 		Priority: priority,
 	}, true
 }

@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 	"unicode"
 
@@ -63,6 +64,11 @@ type Config struct {
 	// run on one host. Empty means unlabelled: notification titles and metric
 	// series are then identical to a single-sensor deployment.
 	Location string
+	// DailyReportEnabled turns on the once-a-day reading notification, sent at
+	// DailyReportHour:DailyReportMinute in the system's local time zone.
+	DailyReportEnabled bool
+	DailyReportHour    int
+	DailyReportMinute  int
 }
 
 // rawConfig mirrors the YAML file; durations are strings so we can report a
@@ -81,6 +87,7 @@ type rawConfig struct {
 	SensorFailLimit          int     `yaml:"sensor_fail_limit"`
 	HTTPTimeout              string  `yaml:"http_timeout"`
 	Location                 string  `yaml:"location"`
+	DailyReportTime          string  `yaml:"daily_report_time"`
 }
 
 //nolint:mnd
@@ -97,6 +104,7 @@ func defaults() rawConfig {
 		MetricsAddr:              ":9101",
 		SensorFailLimit:          5,
 		HTTPTimeout:              "10s",
+		DailyReportTime:          "12:00",
 	}
 }
 
@@ -122,6 +130,28 @@ func parseDur(field, value string) (time.Duration, error) {
 	return d, nil
 }
 
+// clock is a wall-clock time of day parsed from an "HH:MM" config field.
+type clock struct {
+	hour, minute int
+	enabled      bool
+}
+
+// clockDisabled, in any case, turns off the feature an "HH:MM" field schedules.
+const clockDisabled = "disable"
+
+// parseClock parses a 24-hour "HH:MM" config field, or clockDisabled in any
+// case. An empty value is rejected so a blank field cannot pass for either.
+func parseClock(field, value string) (clock, error) {
+	if strings.EqualFold(value, clockDisabled) {
+		return clock{}, nil
+	}
+	t, err := time.Parse("15:04", value)
+	if err != nil {
+		return clock{}, fmt.Errorf("%s %q: %w", field, value, errors.Join(ErrInvalidConfig, err))
+	}
+	return clock{hour: t.Hour(), minute: t.Minute(), enabled: true}, nil
+}
+
 // Load reads, defaults, parses, and validates the config file at path.
 func Load(path string) (Config, error) {
 	data, err := os.ReadFile(path)
@@ -140,6 +170,10 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	report, err := parseClock("daily_report_time", raw.DailyReportTime)
+	if err != nil {
+		return Config{}, err
+	}
 	c := Config{
 		PollInterval:             poll,
 		HumidityThreshold:        raw.HumidityThreshold,
@@ -154,6 +188,9 @@ func Load(path string) (Config, error) {
 		SensorFailLimit:          raw.SensorFailLimit,
 		HTTPTimeout:              timeout,
 		Location:                 raw.Location,
+		DailyReportEnabled:       report.enabled,
+		DailyReportHour:          report.hour,
+		DailyReportMinute:        report.minute,
 	}
 	if err := c.Validate(); err != nil {
 		return Config{}, err

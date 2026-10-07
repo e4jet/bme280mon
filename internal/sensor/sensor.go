@@ -20,6 +20,7 @@ package sensor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"periph.io/x/conn/v3/physic"
@@ -34,6 +35,11 @@ type Reading struct {
 	Humidity    float64 // percent relative humidity
 	Pressure    float64 // hectopascals
 	Time        time.Time
+}
+
+// Summary formats humidity and temperature for a notification body.
+func (r Reading) Summary() string {
+	return fmt.Sprintf("Humidity %.1f%%, temperature %.1f°C", r.Humidity, r.Temperature)
 }
 
 // Reader reads environmental samples. Close releases the underlying bus.
